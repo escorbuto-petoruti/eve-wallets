@@ -34,12 +34,15 @@ type ESIClient interface {
 	CharacterCorporationID(ctx context.Context, characterID int64) (int64, error)
 	CorporationName(ctx context.Context, corporationID int64) (string, error)
 	CorporationWallets(ctx context.Context, token string, corporationID int64) ([]esi.DivisionBalance, error)
+	CharacterJournal(ctx context.Context, token string, characterID int64) ([]esi.JournalEntry, error)
+	CorporationJournal(ctx context.Context, token string, corporationID int64, division int) ([]esi.JournalEntry, error)
 }
 
 // StoreWriter is the subset of *store.Store the collector needs.
 type StoreWriter interface {
 	UpsertWallet(ctx context.Context, w store.Wallet) (int64, error)
 	AddSnapshot(ctx context.Context, walletID int64, takenAt time.Time, cents int64) error
+	AddJournalBalance(ctx context.Context, walletID, entryID int64, at time.Time, cents int64) error
 }
 
 var _ ESIClient = (*esi.Client)(nil)
@@ -100,48 +103,85 @@ func New(deps Deps) *Collector {
 	return &Collector{deps: deps}
 }
 
-// run holds the state of one collection.
-type run struct {
+// walker holds the state of one pass over every character and corporation.
+// It owns the discovery rules shared by Run and Backfill; the two differ only
+// in the callbacks that handle a personal wallet and a corporation.
+type walker struct {
 	c         *Collector
-	takenAt   time.Time
-	rep       Report
-	collected map[int64]bool // corporations already snapshotted
+	collected map[int64]bool // corporations already handled
+	skipped   []Skip
+	errors    []ItemError
+	limited   bool
+	retry     time.Duration
+
+	// personal handles the personal wallet of ch.
+	personal func(ctx context.Context, ch auth.Character, token string) error
+	// corporation handles one corporation the character can read, with the
+	// divisions ESI returned for it.
+	corporation func(ctx context.Context, corpID int64, name, token string, divisions []esi.DivisionBalance) error
+}
+
+func newWalker(c *Collector) *walker {
+	return &walker{c: c, collected: make(map[int64]bool)}
 }
 
 // errStop is an internal signal that the run must end now.
 var errStop = errors.New("collector: stop")
 
+// walk visits every character. It returns nil when everything was visited or
+// a rate limit stopped the pass (see limited), and the context error when the
+// context ends.
+func (w *walker) walk(ctx context.Context) error {
+	chars, err := w.c.deps.Auth.Characters(ctx)
+	if err != nil {
+		return fmt.Errorf("collector: list characters: %w", err)
+	}
+	for _, ch := range chars {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := w.character(ctx, ch); err != nil {
+			if errors.Is(err, errStop) {
+				return nil
+			}
+			return err
+		}
+	}
+	return ctx.Err()
+}
+
 // Run collects one snapshot of every wallet of every character. It returns an
 // error only when the run cannot start (the character list is unavailable) or
 // the context ends; per-item failures are in the Report.
 func (c *Collector) Run(ctx context.Context) (Report, error) {
-	chars, err := c.deps.Auth.Characters(ctx)
-	if err != nil {
-		return Report{}, fmt.Errorf("collector: list characters: %w", err)
-	}
-	r := &run{
-		c:         c,
-		takenAt:   c.deps.Now().Truncate(time.Second),
-		collected: make(map[int64]bool),
-	}
-	r.rep.TakenAt = r.takenAt
-	for _, ch := range chars {
-		if err := ctx.Err(); err != nil {
-			return r.rep, err
+	w := newWalker(c)
+	rep := Report{TakenAt: c.deps.Now().Truncate(time.Second)}
+	w.personal = func(ctx context.Context, ch auth.Character, token string) error {
+		cents, err := c.deps.ESI.CharacterWallet(ctx, token, ch.ID)
+		if err != nil {
+			return w.esiFailure(ctx, ch.Name, err)
 		}
-		if err := r.character(ctx, ch); err != nil {
-			if errors.Is(err, errStop) {
-				break
-			}
-			return r.rep, err
-		}
+		w.record(ctx, &rep, store.Wallet{Kind: store.KindCharacter, OwnerID: ch.ID, OwnerName: ch.Name}, cents)
+		return nil
 	}
-	return r.rep, ctx.Err()
+	w.corporation = func(ctx context.Context, corpID int64, name, _ string, divisions []esi.DivisionBalance) error {
+		for _, d := range divisions {
+			w.record(ctx, &rep, store.Wallet{Kind: store.KindCorporation, OwnerID: corpID, OwnerName: name, Division: d.Division}, d.Cents)
+		}
+		return nil
+	}
+	err := w.walk(ctx)
+	rep.Skipped, rep.Errors = w.skipped, w.errors
+	rep.RateLimited, rep.RetryAfter = w.limited, w.retry
+	if err != nil && ctx.Err() == nil {
+		return Report{}, err // the character list is unavailable
+	}
+	return rep, err
 }
 
-// character collects the wallets of one character. It returns errStop after a
+// character handles the wallets of one character. It returns errStop after a
 // rate limit and a context error when the context ends.
-func (r *run) character(ctx context.Context, ch auth.Character) error {
+func (w *walker) character(ctx context.Context, ch auth.Character) error {
 	var token string
 	tokenFailed := false
 	getToken := func() (string, bool) {
@@ -151,10 +191,10 @@ func (r *run) character(ctx context.Context, ch auth.Character) error {
 		if tokenFailed {
 			return "", false
 		}
-		t, err := r.c.deps.Auth.Token(ctx, ch.ID)
+		t, err := w.c.deps.Auth.Token(ctx, ch.ID)
 		if err != nil {
 			tokenFailed = true
-			r.fail(ch.Name, err)
+			w.fail(ch.Name, err)
 			return "", false
 		}
 		token = t
@@ -162,43 +202,34 @@ func (r *run) character(ctx context.Context, ch auth.Character) error {
 	}
 
 	if !slices.Contains(ch.Scopes, ScopeCharacterWallet) {
-		r.skip(ch.Name, fmt.Sprintf(reasonMissingScopeFmt, ScopeCharacterWallet))
+		w.skip(ch.Name, fmt.Sprintf(reasonMissingScopeFmt, ScopeCharacterWallet))
 	} else if tok, ok := getToken(); ok {
-		if err := r.personal(ctx, ch, tok); err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := w.personal(ctx, ch, tok); err != nil {
 			return err
 		}
 	}
 
 	if !slices.Contains(ch.Scopes, ScopeCorporationWallet) {
-		r.skip(ch.Name, fmt.Sprintf(reasonMissingScopeFmt, ScopeCorporationWallet))
+		w.skip(ch.Name, fmt.Sprintf(reasonMissingScopeFmt, ScopeCorporationWallet))
 		return nil
 	}
-	return r.corporation(ctx, ch, getToken)
+	return w.corp(ctx, ch, getToken)
 }
 
-func (r *run) personal(ctx context.Context, ch auth.Character, token string) error {
+func (w *walker) corp(ctx context.Context, ch auth.Character, getToken func() (string, bool)) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	cents, err := r.c.deps.ESI.CharacterWallet(ctx, token, ch.ID)
+	corpID, err := w.c.deps.ESI.CharacterCorporationID(ctx, ch.ID)
 	if err != nil {
-		return r.esiFailure(ctx, ch.Name, err)
-	}
-	r.record(ctx, store.Wallet{Kind: store.KindCharacter, OwnerID: ch.ID, OwnerName: ch.Name}, cents)
-	return nil
-}
-
-func (r *run) corporation(ctx context.Context, ch auth.Character, getToken func() (string, bool)) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	corpID, err := r.c.deps.ESI.CharacterCorporationID(ctx, ch.ID)
-	if err != nil {
-		return r.esiFailure(ctx, ch.Name, err)
+		return w.esiFailure(ctx, ch.Name, err)
 	}
 	fallback := fmt.Sprintf(corporationFallbackName, corpID)
-	if r.collected[corpID] {
-		r.skip(fallback, ReasonAlreadyCollected)
+	if w.collected[corpID] {
+		w.skip(fallback, ReasonAlreadyCollected)
 		return nil
 	}
 	tok, ok := getToken()
@@ -208,26 +239,26 @@ func (r *run) corporation(ctx context.Context, ch auth.Character, getToken func(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	divisions, err := r.c.deps.ESI.CorporationWallets(ctx, tok, corpID)
+	divisions, err := w.c.deps.ESI.CorporationWallets(ctx, tok, corpID)
 	if esi.IsForbidden(err) {
-		r.skip(fallback, ReasonMissingRole)
+		w.skip(fallback, ReasonMissingRole)
 		return nil
 	}
 	if err != nil {
-		return r.esiFailure(ctx, fallback, err)
+		return w.esiFailure(ctx, fallback, err)
 	}
-	r.collected[corpID] = true
+	w.collected[corpID] = true
 
-	name, nameErr := r.c.deps.ESI.CorporationName(ctx, corpID)
+	name, nameErr := w.c.deps.ESI.CorporationName(ctx, corpID)
 	if nameErr != nil || name == "" {
 		name = fallback
 	}
-	for _, d := range divisions {
-		r.record(ctx, store.Wallet{Kind: store.KindCorporation, OwnerID: corpID, OwnerName: name, Division: d.Division}, d.Cents)
+	if err := w.corporation(ctx, corpID, name, tok, divisions); err != nil {
+		return err
 	}
 	if nameErr != nil {
 		// The data is kept; only a rate limit ends the run.
-		return r.esiFailure(ctx, name, nameErr, true)
+		return w.esiFailure(ctx, name, nameErr, true)
 	}
 	return nil
 }
@@ -236,41 +267,41 @@ func (r *run) corporation(ctx context.Context, ch auth.Character, getToken func(
 // and stops the run; a context error propagates; anything else is recorded as
 // an item error and collection continues (nil). When quiet is set, ordinary
 // errors are ignored (used for the optional corporation name lookup).
-func (r *run) esiFailure(ctx context.Context, owner string, err error, quiet ...bool) error {
+func (w *walker) esiFailure(ctx context.Context, owner string, err error, quiet ...bool) error {
 	var rl *esi.RateLimitError
 	if errors.As(err, &rl) {
-		r.rep.RateLimited = true
-		r.rep.RetryAfter = rl.RetryAfter
+		w.limited = true
+		w.retry = rl.RetryAfter
 		return errStop
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
 	}
 	if len(quiet) == 0 || !quiet[0] {
-		r.fail(owner, err)
+		w.fail(owner, err)
 	}
 	return nil
 }
 
-// record stores the wallet and its snapshot, noting it in the report.
-func (r *run) record(ctx context.Context, w store.Wallet, cents int64) {
-	id, err := r.c.deps.Store.UpsertWallet(ctx, w)
+// record stores the wallet and its snapshot, noting it in rep.
+func (w *walker) record(ctx context.Context, rep *Report, wl store.Wallet, cents int64) {
+	id, err := w.c.deps.Store.UpsertWallet(ctx, wl)
 	if err == nil {
-		err = r.c.deps.Store.AddSnapshot(ctx, id, r.takenAt, cents)
+		err = w.c.deps.Store.AddSnapshot(ctx, id, rep.TakenAt, cents)
 	}
 	if err != nil {
-		r.fail(w.OwnerName, err)
+		w.fail(wl.OwnerName, err)
 		return
 	}
-	r.rep.Snapshots = append(r.rep.Snapshots, Snapshot{
-		Kind: w.Kind, OwnerID: w.OwnerID, OwnerName: w.OwnerName, Division: w.Division, Cents: cents,
+	rep.Snapshots = append(rep.Snapshots, Snapshot{
+		Kind: wl.Kind, OwnerID: wl.OwnerID, OwnerName: wl.OwnerName, Division: wl.Division, Cents: cents,
 	})
 }
 
-func (r *run) skip(owner, reason string) {
-	r.rep.Skipped = append(r.rep.Skipped, Skip{Owner: owner, Reason: reason})
+func (w *walker) skip(owner, reason string) {
+	w.skipped = append(w.skipped, Skip{Owner: owner, Reason: reason})
 }
 
-func (r *run) fail(owner string, err error) {
-	r.rep.Errors = append(r.rep.Errors, ItemError{Owner: owner, Err: err})
+func (w *walker) fail(owner string, err error) {
+	w.errors = append(w.errors, ItemError{Owner: owner, Err: err})
 }

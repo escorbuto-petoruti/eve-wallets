@@ -46,6 +46,9 @@ type fakeESI struct {
 	corpErr    map[string]error
 	calls      []string
 	onCall     func(call string) // optional hook
+
+	journals   map[string][]esi.JournalEntry // "char/<id>" or "corp/<id>/<division>"
+	journalErr map[string]error
 }
 
 func (f *fakeESI) record(c string) {
@@ -89,6 +92,18 @@ func (f *fakeESI) CorporationWallets(_ context.Context, token string, corp int64
 	return f.corpWallet[key], nil
 }
 
+func (f *fakeESI) CharacterJournal(_ context.Context, _ string, id int64) ([]esi.JournalEntry, error) {
+	key := fmt.Sprintf("char/%d", id)
+	f.record("journal/" + key)
+	return f.journals[key], f.journalErr[key]
+}
+
+func (f *fakeESI) CorporationJournal(_ context.Context, _ string, corp int64, division int) ([]esi.JournalEntry, error) {
+	key := fmt.Sprintf("corp/%d/%d", corp, division)
+	f.record("journal/" + key)
+	return f.journals[key], f.journalErr[key]
+}
+
 type snap struct {
 	wallet store.Wallet
 	at     time.Time
@@ -100,11 +115,39 @@ type fakeStore struct {
 	snaps     []snap
 	upsertErr error
 	snapErr   error
+
+	// journal points keyed by wallet id and entry id, like the real store.
+	points     map[[2]int64]point
+	journalErr error
+}
+
+type point struct {
+	at    time.Time
+	cents int64
+}
+
+func (s *fakeStore) AddJournalBalance(_ context.Context, id, entry int64, at time.Time, cents int64) error {
+	if s.journalErr != nil {
+		return s.journalErr
+	}
+	if s.points == nil {
+		s.points = make(map[[2]int64]point)
+	}
+	k := [2]int64{id, entry}
+	if _, ok := s.points[k]; !ok {
+		s.points[k] = point{at: at, cents: cents}
+	}
+	return nil
 }
 
 func (s *fakeStore) UpsertWallet(_ context.Context, w store.Wallet) (int64, error) {
 	if s.upsertErr != nil {
 		return 0, s.upsertErr
+	}
+	for i, have := range s.wallets {
+		if have == w {
+			return int64(i + 1), nil
+		}
 	}
 	s.wallets = append(s.wallets, w)
 	return int64(len(s.wallets)), nil

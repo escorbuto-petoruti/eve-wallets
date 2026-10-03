@@ -41,10 +41,12 @@ const (
 
 const usage = `Usage:
   eve-wallets collect [--db PATH]
+  eve-wallets backfill [--db PATH]
   eve-wallets serve [--addr 127.0.0.1:8088] [--db PATH] [--every 30m] [--no-collect]
 
 Commands:
   collect  take one snapshot of every wallet and print a summary
+  backfill store the last 30 days of history from the wallet journals
   serve    serve the charts on a loopback address and collect in the background
 
 Environment:
@@ -95,6 +97,8 @@ func run(ctx context.Context, args []string, d deps) int {
 		return 2
 	case "collect":
 		return runCollect(ctx, args[1:], d)
+	case "backfill":
+		return runBackfill(ctx, args[1:], d)
 	case "serve":
 		return runServe(ctx, args[1:], d)
 	}
@@ -138,8 +142,10 @@ func buildCollector(d deps, st *store.Store) *collector.Collector {
 	})
 }
 
-func runCollect(ctx context.Context, args []string, d deps) int {
-	fset := newFlagSet("collect", d)
+// runCollector parses the flags of a one-shot command, opens the store and
+// hands the wired collector to do. what names the operation in error messages.
+func runCollector(ctx context.Context, name, what string, args []string, d deps, do func(*collector.Collector) error) int {
+	fset := newFlagSet(name, d)
 	dbFlag := fset.String("db", "", "database path")
 	if code, stop := parseFlags(fset, args); stop {
 		return code
@@ -156,16 +162,65 @@ func runCollect(ctx context.Context, args []string, d deps) int {
 	}
 	defer st.Close()
 
-	rep, err := buildCollector(d, st).Run(ctx)
-	if err != nil {
-		fmt.Fprintf(d.stderr, "eve-wallets: collection failed: %v\n", err)
+	if err := do(buildCollector(d, st)); err != nil {
+		fmt.Fprintf(d.stderr, "eve-wallets: %s failed: %v\n", what, err)
 		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
 			fmt.Fprintf(d.stderr, "eve-wallets: eve-auth not found: install it on PATH or set EVE_AUTH_BIN (currently %q)\n", authBin(d.getenv))
 		}
 		return 1
 	}
-	printReport(d.stdout, rep)
 	return 0
+}
+
+func runCollect(ctx context.Context, args []string, d deps) int {
+	return runCollector(ctx, "collect", "collection", args, d, func(c *collector.Collector) error {
+		rep, err := c.Run(ctx)
+		if err != nil {
+			return err
+		}
+		printReport(d.stdout, rep)
+		return nil
+	})
+}
+
+func runBackfill(ctx context.Context, args []string, d deps) int {
+	return runCollector(ctx, "backfill", "backfill", args, d, func(c *collector.Collector) error {
+		rep, err := c.Backfill(ctx)
+		if err != nil {
+			return err
+		}
+		printBackfillReport(d.stdout, rep)
+		return nil
+	})
+}
+
+// printBackfillReport writes a short human summary of rep. It holds no tokens.
+func printBackfillReport(w io.Writer, rep collector.BackfillReport) {
+	fmt.Fprintf(w, "Wallets processed: %d\n", len(rep.Wallets))
+	for _, bw := range rep.Wallets {
+		label := bw.OwnerName
+		if bw.Kind == store.KindCorporation {
+			label = fmt.Sprintf("%s (division %d)", bw.OwnerName, bw.Division)
+		}
+		fmt.Fprintf(w, "  %-11s %s: %d points\n", bw.Kind, label, bw.Points)
+	}
+	fmt.Fprintf(w, "Journal points stored: %d\n", rep.Points())
+	fmt.Fprintf(w, "Entries without balance: %d\n", rep.NoBalance())
+	if len(rep.Skipped) > 0 {
+		fmt.Fprintf(w, "Skipped: %d\n", len(rep.Skipped))
+		for _, k := range rep.Skipped {
+			fmt.Fprintf(w, "  %s: %s\n", k.Owner, k.Reason)
+		}
+	}
+	if len(rep.Errors) > 0 {
+		fmt.Fprintf(w, "Errors: %d\n", len(rep.Errors))
+		for _, e := range rep.Errors {
+			fmt.Fprintf(w, "  %s\n", e.Error())
+		}
+	}
+	if rep.RateLimited {
+		fmt.Fprintf(w, "ESI rate limit reached: the run is partial; retry after %s\n", rep.RetryAfter)
+	}
 }
 
 // printReport writes a short human summary of rep. It holds no tokens.

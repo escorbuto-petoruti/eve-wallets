@@ -25,7 +25,7 @@ ESI exposes only the current balance (`/wallets`) and a 30-day journal, so histo
 - [x] T3 `internal/auth` TokenSource over `eve-auth` + `internal/collector` (snapshot all characters, graceful corp-role failure) + tests
 - [x] T4 `internal/web`: `web.New(Deps{Store, Status})`, JSON API, embedded offline Chart.js page, hardening headers
 - [x] T5 `cmd/eve-wallets`: `serve` (web + background collect loop) and `collect`
-- [ ] T6 journal backfill of the last 30 days (idempotent, deduplicated)
+- [x] T6 journal backfill of the last 30 days (idempotent, deduplicated)
 - [ ] T7 README: setup (eve-auth install, scopes, login), usage, limits
 
 ## Routing / test policy
@@ -43,7 +43,9 @@ T4 done (delegated writer, test-first: RED observed on undefined symbols, then G
 
 T5 done (delegated writer; test-first for `cmd/eve-wallets`: RED observed on undefined symbols, then GREEN; the `internal/scheduler` tests and code were written together, so no separate RED there). `internal/scheduler`: `Loop{Every, Run, OnResult, Wait}.Start(ctx)` runs once immediately, waits `Every` after each run (no overlap), delays by `RetryAfter` only when `RateLimited` and longer than `Every`, survives run errors, stops on cancel during a wait or a run. `cmd/eve-wallets`: `run(ctx, args, deps)` with injected IO, env, store opener, token source, ESI factory and listener; `collect` (summary without tokens, exit 1 only on fatal error, clear `eve-auth` not found hint), `serve` (loopback-only `--addr` with no bypass, `--every` minimum 1m, `--no-collect`, `http.Server` timeouts, graceful shutdown: loop stopped, then `Shutdown`, then store closed); DB path order flag, `EVE_WALLETS_DB`, XDG, `~/.local/share`; dir 0700 and db/-wal/-shm 0600; user agent `eve-wallets/<version> (local)` with `-ldflags -X main.version`. Evidence: `CGO_ENABLED=0 go vet ./...` clean; `go test ./...` ok; `go test -count=10 ./internal/scheduler/... ./cmd/...` ok; `gofmt -l .` empty; built binary: `help` exit 2 with usage, `serve --addr 0.0.0.0:8088` refused with exit 2. Commit: `feat(cli): add serve and collect commands with a background loop`.
 
+T6 done (delegated writer; test-first: RED observed on undefined `Backfill`/`printBackfillReport`, then GREEN). `internal/collector`: discovery and walk logic extracted into a shared `walker` used by `Run` and the new `Backfill(ctx) (BackfillReport, error)` (same scope, personal/corporation, once-per-corp, 403 skip, rate-limit partial and ctx rules; `Run` tests unchanged). Backfill upserts each wallet, then stores every journal entry with a balance through `AddJournalBalance` (idempotent per entry id); entries without balance are counted; per-wallet `Points`/`NoBalance`, skips, errors, `RateLimited`/`RetryAfter`, no tokens. `ESIClient` gained the two journal methods and `StoreWriter` gained `AddJournalBalance`. `cmd/eve-wallets`: `backfill [--db PATH]` (shared one-shot wiring with `collect`, summary, exit 1 only on fatal error, usage updated); `serve` does not run it. Evidence: `CGO_ENABLED=0 go vet ./...` clean; `go test ./...` ok; `go test -count=10 ./internal/collector/... ./cmd/...` ok; `gofmt -l .` empty. Commit: `feat(collector): backfill 30 days of history from wallet journals`.
+
 Review note: the native review of T4 was escalated on a false positive caused by splitting the vendored Chart.js out of the reviewed range; the user decided to continue under ordinary repository policy (the review boundary for later assessments is 359b16f).
 
 ## Next step
-T6: journal backfill of the last 30 days (idempotent, deduplicated).
+T7: README (setup with eve-auth install, scopes, login; usage including `backfill`; limits).

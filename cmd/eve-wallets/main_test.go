@@ -60,6 +60,15 @@ func (fakeESI) CorporationWallets(context.Context, string, int64) ([]esi.Divisio
 	return nil, errors.New("unused")
 }
 
+func (fakeESI) CharacterJournal(context.Context, string, int64) ([]esi.JournalEntry, error) {
+	bal := int64(5000)
+	at := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
+	return []esi.JournalEntry{{ID: 1, Date: at, BalanceCents: &bal}, {ID: 2, Date: at}}, nil
+}
+func (fakeESI) CorporationJournal(context.Context, string, int64, int) ([]esi.JournalEntry, error) {
+	return nil, errors.New("unused")
+}
+
 // syncBuffer is a goroutine-safe bytes.Buffer.
 type syncBuffer struct {
 	mu sync.Mutex
@@ -155,7 +164,7 @@ func TestUsage(t *testing.T) {
 }
 
 func TestSubcommandHelpExitsZero(t *testing.T) {
-	for _, cmd := range []string{"collect", "serve"} {
+	for _, cmd := range []string{"collect", "backfill", "serve"} {
 		h := newHarness(t, nil)
 		if got := run(context.Background(), []string{cmd, "-h"}, h.deps); got != 0 {
 			t.Errorf("%s -h exit = %d, want 0", cmd, got)
@@ -330,6 +339,68 @@ func TestCollectReportsErrorsAndRateLimit(t *testing.T) {
 		RetryAfter:  90 * time.Second,
 	})
 	for _, want := range []string{"Bob: wallet failed", "rate limit", "1m30s"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("missing %q in:\n%s", want, buf.String())
+		}
+	}
+}
+
+func TestBackfillHappyPath(t *testing.T) {
+	h := newHarness(t, map[string]string{"EVE_AUTH_BIN": "/opt/eve-auth", "HOME": "/home/u"})
+	if got := run(context.Background(), []string{"backfill"}, h.deps); got != 0 {
+		t.Fatalf("exit = %d; stderr = %q", got, h.err.String())
+	}
+	out := h.out.String()
+	for _, want := range []string{"Wallets processed: 1", "Journal points stored: 1", "Entries without balance: 1", "Alice", "esi-wallet.read_corporation_wallets.v1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out+h.err.String(), "secret-token") {
+		t.Error("token leaked into the output")
+	}
+	if h.openedBin != "/opt/eve-auth" || h.dbPath != "/home/u/.local/share/eve-wallets/wallets.db" {
+		t.Errorf("bin = %q, db = %q", h.openedBin, h.dbPath)
+	}
+}
+
+func TestBackfillDBFlag(t *testing.T) {
+	h := newHarness(t, nil)
+	if got := run(context.Background(), []string{"backfill", "--db", "/x/y.db"}, h.deps); got != 0 || h.dbPath != "/x/y.db" {
+		t.Fatalf("exit = %d, db = %q", got, h.dbPath)
+	}
+}
+
+func TestBackfillFatalError(t *testing.T) {
+	h := newHarness(t, map[string]string{"HOME": "/home/u"})
+	h.tokens.listErr = errors.New("auth: list characters: boom")
+	if got := run(context.Background(), []string{"backfill"}, h.deps); got != 1 {
+		t.Fatalf("exit = %d, want 1", got)
+	}
+	if !strings.Contains(h.err.String(), "boom") {
+		t.Errorf("stderr = %q", h.err.String())
+	}
+}
+
+func TestBackfillUnknownFlag(t *testing.T) {
+	h := newHarness(t, nil)
+	if got := run(context.Background(), []string{"backfill", "--nope"}, h.deps); got != 2 {
+		t.Fatalf("exit = %d, want 2", got)
+	}
+}
+
+func TestPrintBackfillReport(t *testing.T) {
+	var buf bytes.Buffer
+	printBackfillReport(&buf, collector.BackfillReport{
+		Wallets: []collector.BackfillWallet{
+			{Kind: store.KindCorporation, OwnerName: "Acme", Division: 2, Points: 3, NoBalance: 1},
+		},
+		Skipped:     []collector.Skip{{Owner: "Corp 9", Reason: "missing corporation role"}},
+		Errors:      []collector.ItemError{{Owner: "Bob", Err: errors.New("journal failed")}},
+		RateLimited: true,
+		RetryAfter:  90 * time.Second,
+	})
+	for _, want := range []string{"Acme (division 2)", "Skipped: 1", "Corp 9: missing corporation role", "Bob: journal failed", "rate limit", "1m30s"} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("missing %q in:\n%s", want, buf.String())
 		}
