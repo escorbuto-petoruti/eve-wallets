@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"slices"
 
 	"github.com/escorbuto-petoruti/eve-wallets/internal/collector"
 )
@@ -32,7 +33,16 @@ func newCycle(c cycler, backfill bool) func(context.Context) (collector.Report, 
 // failure of the whole backfill (err) is recorded only when report is true,
 // that is, when it is not just the shutdown of the program.
 func mergeBackfill(rep collector.Report, back collector.BackfillReport, err error, report bool) collector.Report {
-	rep.Skipped = append(rep.Skipped, back.Skipped...)
+	// The snapshot and the backfill hit the same skip for the same character.
+	seen := make(map[collector.Skip]bool, len(rep.Skipped)+len(back.Skipped))
+	var skipped []collector.Skip
+	for _, s := range append(slices.Clone(rep.Skipped), back.Skipped...) {
+		if !seen[s] {
+			seen[s] = true
+			skipped = append(skipped, s)
+		}
+	}
+	rep.Skipped = skipped
 	for _, e := range back.Errors {
 		e.Owner = "backfill: " + e.Owner // the identity stays, only the label grows
 		rep.Errors = append(rep.Errors, e)
