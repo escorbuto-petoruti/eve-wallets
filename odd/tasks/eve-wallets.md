@@ -26,7 +26,7 @@ ESI exposes only the current balance (`/wallets`) and a 30-day journal, so histo
 - [x] T4 `internal/web`: `web.New(Deps{Store, Status})`, JSON API, embedded offline Chart.js page, hardening headers
 - [x] T5 `cmd/eve-wallets`: `serve` (web + background collect loop) and `collect`
 - [x] T6 journal backfill of the last 30 days (idempotent, deduplicated)
-- [ ] T7 README: setup (eve-auth install, scopes, login), usage, limits
+- [x] T7 README: setup (eve-auth install, scopes, login), usage, limits
 
 ## Routing / test policy
 - Test-first with `go test ./...`; ESI and `eve-auth` faked. One delegated writer per task, one Conventional Commit per task on the feature branch.
@@ -47,5 +47,7 @@ T6 done (delegated writer; test-first: RED observed on undefined `Backfill`/`pri
 
 Review note: the native review of T4 was escalated on a false positive caused by splitting the vendored Chart.js out of the reviewed range; the user decided to continue under ordinary repository policy (the review boundary for later assessments is 359b16f).
 
+T7 done (delegated writer, docs only, no RED applicable). `README.md` covers requirements, setup, usage (flags, env vars, DB path and modes), history limits, security notes, architecture, development and an honest status (not run against real ESI/eve-auth, UI not checked in a browser). Every flag, env var and default was checked against `cmd/eve-wallets/main.go`. Evidence: `CGO_ENABLED=0 go build ./...` and `go test ./...` ok. Commit: `docs: add README with setup, usage and limits`.
+
 ## Next step
-T7: README (setup with eve-auth install, scopes, login; usage including `backfill`; limits).
+Open a PR from `feat/eve-wallets-mvp`; delivery (push, PR, merge) is the user's decision.
