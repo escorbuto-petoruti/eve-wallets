@@ -17,7 +17,11 @@ func TestVendoredChartJS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embedded Chart.js is missing: %v", err)
 	}
-	if len(data) == 0 || !strings.HasPrefix(string(data), "/*!") || !strings.Contains(string(data[:200]), "Chart.js v") {
+	banner := string(data)
+	if len(banner) > 200 {
+		banner = banner[:200]
+	}
+	if !strings.HasPrefix(banner, "/*!") || !strings.Contains(banner, "Chart.js v") {
 		t.Fatalf("embedded file does not look like the Chart.js bundle")
 	}
 
