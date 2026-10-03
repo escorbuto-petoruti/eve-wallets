@@ -100,13 +100,15 @@ func serveAsset(w http.ResponseWriter, r *http.Request, name, ctype string) {
 }
 
 type walletJSON struct {
-	ID          int64      `json:"id"`
-	Kind        store.Kind `json:"kind"`
-	OwnerID     int64      `json:"owner_id"`
-	OwnerName   string     `json:"owner_name"`
-	Division    int        `json:"division"`
-	Cents       *int64     `json:"cents"`
-	BalanceTime *int64     `json:"balance_time"`
+	ID          int64            `json:"id"`
+	Kind        store.Kind       `json:"kind"`
+	OwnerID     int64            `json:"owner_id"`
+	OwnerName   string           `json:"owner_name"`
+	Division    int              `json:"division"`
+	Name        string           `json:"name"`
+	NameSource  store.NameSource `json:"name_source"`
+	Cents       *int64           `json:"cents"`
+	BalanceTime *int64           `json:"balance_time"`
 }
 
 func (s *server) wallets(w http.ResponseWriter, r *http.Request) {
@@ -127,7 +129,8 @@ func (s *server) wallets(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]walletJSON, 0, len(wallets))
 	for _, wl := range wallets {
-		item := walletJSON{ID: wl.ID, Kind: wl.Kind, OwnerID: wl.OwnerID, OwnerName: wl.OwnerName, Division: wl.Division}
+		item := walletJSON{ID: wl.ID, Kind: wl.Kind, OwnerID: wl.OwnerID, OwnerName: wl.OwnerName, Division: wl.Division,
+			Name: wl.DisplayName(), NameSource: wl.NameSource()}
 		if b, ok := byID[wl.ID]; ok {
 			cents, at := b.Cents, b.At.Unix()
 			item.Cents, item.BalanceTime = &cents, &at

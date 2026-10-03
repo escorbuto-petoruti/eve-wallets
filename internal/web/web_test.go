@@ -120,6 +120,59 @@ func TestWallets(t *testing.T) {
 	}
 }
 
+func TestWalletsExposeNames(t *testing.T) {
+	f := newFixture(t, nil, true)
+	ctx := context.Background()
+	esiID, err := f.st.UpsertWallet(ctx, store.Wallet{Kind: store.KindCorporation, OwnerID: 9, OwnerName: "Corp", Division: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.SetESIName(ctx, esiID, "Ops"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.SetESIName(ctx, f.corpID, "From ESI"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.SetLabel(ctx, f.corpID, "Mining <i>fund</i>"); err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Wallets []struct {
+			ID         int64  `json:"id"`
+			Name       string `json:"name"`
+			NameSource string `json:"name_source"`
+		} `json:"wallets"`
+	}
+	decode(t, do(f.h, http.MethodGet, "/api/wallets"), &got)
+	want := map[int64][2]string{
+		f.charID: {"Alice <b>", "default"},
+		f.corpID: {"Mining <i>fund</i>", "custom"},
+		esiID:    {"Ops", "esi"},
+	}
+	if len(got.Wallets) != len(want) {
+		t.Fatalf("wallets = %d, want %d", len(got.Wallets), len(want))
+	}
+	for _, w := range got.Wallets {
+		if exp := want[w.ID]; w.Name != exp[0] || w.NameSource != exp[1] {
+			t.Errorf("wallet %d: name %q source %q, want %q %q", w.ID, w.Name, w.NameSource, exp[0], exp[1])
+		}
+	}
+}
+
+func TestWalletsDefaultDivisionName(t *testing.T) {
+	f := newFixture(t, nil, true)
+	var got struct {
+		Wallets []struct {
+			Name       string `json:"name"`
+			NameSource string `json:"name_source"`
+		} `json:"wallets"`
+	}
+	decode(t, do(f.h, http.MethodGet, "/api/wallets"), &got)
+	if w := got.Wallets[1]; w.Name != "Division 3" || w.NameSource != "default" {
+		t.Fatalf("corporation wallet = %+v", w)
+	}
+}
+
 func TestWalletsWithoutBalanceHaveNullCents(t *testing.T) {
 	f := newFixture(t, nil, false)
 	if _, err := f.st.UpsertWallet(context.Background(), store.Wallet{Kind: store.KindCharacter, OwnerID: 5, OwnerName: "Bob"}); err != nil {

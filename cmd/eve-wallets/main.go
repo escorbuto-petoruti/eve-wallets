@@ -43,11 +43,16 @@ const usage = `Usage:
   eve-wallets collect [--db PATH]
   eve-wallets backfill [--db PATH]
   eve-wallets serve [--addr 127.0.0.1:8088] [--db PATH] [--every 30m] [--no-collect]
+  eve-wallets wallets [--db PATH]
+  eve-wallets label [--db PATH] <wallet-id> <name...>
+  eve-wallets label [--db PATH] --clear <wallet-id>
 
 Commands:
   collect  take one snapshot of every wallet and print a summary
   backfill store the last 30 days of history from the wallet journals
   serve    serve the charts on a loopback address and collect in the background
+  wallets  list the wallets with id, owner, division and displayed name
+  label    set (or --clear) the name shown for a wallet; flags go before the id
 
 Environment:
   EVE_AUTH_BIN    eve-auth executable (default "eve-auth")
@@ -101,6 +106,10 @@ func run(ctx context.Context, args []string, d deps) int {
 		return runBackfill(ctx, args[1:], d)
 	case "serve":
 		return runServe(ctx, args[1:], d)
+	case "wallets":
+		return runWallets(ctx, args[1:], d)
+	case "label":
+		return runLabel(ctx, args[1:], d)
 	}
 	fmt.Fprintf(d.stderr, "eve-wallets: unknown command %q\n\n%s", args[0], usage)
 	return 2

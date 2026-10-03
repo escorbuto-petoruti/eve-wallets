@@ -21,8 +21,10 @@ import (
 const (
 	ScopeCharacterWallet   = "esi-wallet.read_character_wallet.v1"
 	ScopeCorporationWallet = "esi-wallet.read_corporation_wallets.v1"
+	ScopeCorporationNames  = "esi-corporations.read_divisions.v1"
 
 	ReasonMissingRole       = "missing corporation role"
+	ReasonMissingDirector   = "missing Director role"
 	ReasonAlreadyCollected  = "already collected"
 	reasonMissingScopeFmt   = "missing scope %s"
 	corporationFallbackName = "Corp %d"
@@ -34,6 +36,7 @@ type ESIClient interface {
 	CharacterCorporationID(ctx context.Context, characterID int64) (int64, error)
 	CorporationName(ctx context.Context, corporationID int64) (string, error)
 	CorporationWallets(ctx context.Context, token string, corporationID int64) ([]esi.DivisionBalance, error)
+	CorporationDivisions(ctx context.Context, token string, corporationID int64) (esi.DivisionNames, error)
 	CharacterJournal(ctx context.Context, token string, characterID int64) ([]esi.JournalEntry, error)
 	CorporationJournal(ctx context.Context, token string, corporationID int64, division int) ([]esi.JournalEntry, error)
 }
@@ -43,6 +46,8 @@ type StoreWriter interface {
 	UpsertWallet(ctx context.Context, w store.Wallet) (int64, error)
 	AddSnapshot(ctx context.Context, walletID int64, takenAt time.Time, cents int64) error
 	AddJournalBalance(ctx context.Context, walletID, entryID int64, at time.Time, cents int64) error
+	SetESIName(ctx context.Context, walletID int64, name string) error
+	ClearESIName(ctx context.Context, walletID int64) error
 }
 
 var _ ESIClient = (*esi.Client)(nil)
@@ -88,6 +93,8 @@ type Report struct {
 	// then holds only what was collected before that. RetryAfter is ESI's hint.
 	RateLimited bool
 	RetryAfter  time.Duration
+	// NamesUpdated counts the wallets whose ESI name was set or cleared.
+	NamesUpdated int
 }
 
 // Collector runs snapshot collections.
@@ -109,6 +116,7 @@ func New(deps Deps) *Collector {
 type walker struct {
 	c         *Collector
 	collected map[int64]bool // corporations already handled
+	named     map[int64]bool // corporations whose division names were fetched
 	skipped   []Skip
 	errors    []ItemError
 	limited   bool
@@ -119,10 +127,13 @@ type walker struct {
 	// corporation handles one corporation the character can read, with the
 	// divisions ESI returned for it.
 	corporation func(ctx context.Context, corpID int64, name, token string, divisions []esi.DivisionBalance) error
+	// names, when set, refreshes the division names of a corporation whose
+	// wallets were collected. It is nil for passes that do not need them.
+	names func(ctx context.Context, corpID int64, name, token string, names esi.DivisionNames) error
 }
 
 func newWalker(c *Collector) *walker {
-	return &walker{c: c, collected: make(map[int64]bool)}
+	return &walker{c: c, collected: make(map[int64]bool), named: make(map[int64]bool)}
 }
 
 // errStop is an internal signal that the run must end now.
@@ -164,9 +175,34 @@ func (c *Collector) Run(ctx context.Context) (Report, error) {
 		w.record(ctx, &rep, store.Wallet{Kind: store.KindCharacter, OwnerID: ch.ID, OwnerName: ch.Name}, cents)
 		return nil
 	}
+	// Wallet ids by corporation and division, filled as wallets are stored.
+	walletIDs := make(map[int64]map[int]int64)
 	w.corporation = func(ctx context.Context, corpID int64, name, _ string, divisions []esi.DivisionBalance) error {
 		for _, d := range divisions {
-			w.record(ctx, &rep, store.Wallet{Kind: store.KindCorporation, OwnerID: corpID, OwnerName: name, Division: d.Division}, d.Cents)
+			id, ok := w.record(ctx, &rep, store.Wallet{Kind: store.KindCorporation, OwnerID: corpID, OwnerName: name, Division: d.Division}, d.Cents)
+			if !ok {
+				continue
+			}
+			if walletIDs[corpID] == nil {
+				walletIDs[corpID] = make(map[int]int64)
+			}
+			walletIDs[corpID][d.Division] = id
+		}
+		return nil
+	}
+	w.names = func(ctx context.Context, corpID int64, name, _ string, names esi.DivisionNames) error {
+		for division, id := range walletIDs[corpID] {
+			var err error
+			if n, ok := names[division]; ok {
+				err = c.deps.Store.SetESIName(ctx, id, n)
+			} else {
+				err = c.deps.Store.ClearESIName(ctx, id) // the default name is in use
+			}
+			if err != nil {
+				w.fail(name, err)
+				continue
+			}
+			rep.NamesUpdated++
 		}
 		return nil
 	}
@@ -230,7 +266,8 @@ func (w *walker) corp(ctx context.Context, ch auth.Character, getToken func() (s
 	fallback := fmt.Sprintf(corporationFallbackName, corpID)
 	if w.collected[corpID] {
 		w.skip(fallback, ReasonAlreadyCollected)
-		return nil
+		// An earlier character may have lacked the scope or the Director role.
+		return w.corporationNames(ctx, ch, corpID, fallback, getToken)
 	}
 	tok, ok := getToken()
 	if !ok {
@@ -258,9 +295,39 @@ func (w *walker) corp(ctx context.Context, ch auth.Character, getToken func() (s
 	}
 	if nameErr != nil {
 		// The data is kept; only a rate limit ends the run.
-		return w.esiFailure(ctx, name, nameErr, true)
+		if err := w.esiFailure(ctx, name, nameErr, true); err != nil {
+			return err
+		}
 	}
-	return nil
+	return w.corporationNames(ctx, ch, corpID, name, getToken)
+}
+
+// corporationNames refreshes the division names of a corporation once per run,
+// when the pass wants them and the character has the optional scope. Without
+// the scope nothing happens and nothing is recorded. A 403 is a recorded skip
+// that a later character of the corporation may still resolve; a failed call
+// leaves the stored names untouched.
+func (w *walker) corporationNames(ctx context.Context, ch auth.Character, corpID int64, owner string, getToken func() (string, bool)) error {
+	if w.names == nil || w.named[corpID] || !slices.Contains(ch.Scopes, ScopeCorporationNames) {
+		return nil
+	}
+	tok, ok := getToken()
+	if !ok {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	names, err := w.c.deps.ESI.CorporationDivisions(ctx, tok, corpID)
+	if esi.IsForbidden(err) {
+		w.skip(owner, ReasonMissingDirector)
+		return nil
+	}
+	if err != nil {
+		return w.esiFailure(ctx, owner, err)
+	}
+	w.named[corpID] = true
+	return w.names(ctx, corpID, owner, tok, names)
 }
 
 // esiFailure classifies an ESI error. A rate limit is recorded in the report
@@ -284,18 +351,20 @@ func (w *walker) esiFailure(ctx context.Context, owner string, err error, quiet 
 }
 
 // record stores the wallet and its snapshot, noting it in rep.
-func (w *walker) record(ctx context.Context, rep *Report, wl store.Wallet, cents int64) {
+// It returns the wallet id and whether the wallet was stored.
+func (w *walker) record(ctx context.Context, rep *Report, wl store.Wallet, cents int64) (int64, bool) {
 	id, err := w.c.deps.Store.UpsertWallet(ctx, wl)
 	if err == nil {
 		err = w.c.deps.Store.AddSnapshot(ctx, id, rep.TakenAt, cents)
 	}
 	if err != nil {
 		w.fail(wl.OwnerName, err)
-		return
+		return 0, false
 	}
 	rep.Snapshots = append(rep.Snapshots, Snapshot{
 		Kind: wl.Kind, OwnerID: wl.OwnerID, OwnerName: wl.OwnerName, Division: wl.Division, Cents: cents,
 	})
+	return id, true
 }
 
 func (w *walker) skip(owner, reason string) {

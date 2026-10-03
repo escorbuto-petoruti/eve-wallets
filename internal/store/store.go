@@ -6,10 +6,13 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	_ "modernc.org/sqlite" // pure Go SQLite driver
 )
@@ -23,14 +26,66 @@ const (
 	KindCorporation Kind = "corporation"
 )
 
+// Sentinel errors.
+var (
+	// ErrNotFound reports that a wallet id does not exist.
+	ErrNotFound = errors.New("store: wallet not found")
+	// ErrInvalidName reports a wallet name that is empty, too long or contains
+	// control characters.
+	ErrInvalidName = errors.New("store: invalid wallet name")
+)
+
+// maxNameLen is the longest accepted wallet name, in characters.
+const maxNameLen = 64
+
+// NameSource tells where a wallet's displayed name comes from.
+type NameSource string
+
+// Name sources, in order of precedence.
+const (
+	NameCustom  NameSource = "custom"  // chosen by the user
+	NameESI     NameSource = "esi"     // reported by ESI
+	NameDefault NameSource = "default" // derived from the owner and division
+)
+
 // Wallet identifies one EVE wallet: a character wallet (Division 0) or one
-// division (1-7) of a corporation wallet.
+// division (1-7) of a corporation wallet. Label and ESIName are empty when
+// unset.
 type Wallet struct {
 	ID        int64
 	Kind      Kind
 	OwnerID   int64
 	OwnerName string
 	Division  int
+	Label     string // user-chosen name
+	ESIName   string // name reported by ESI
+}
+
+// DisplayName returns the label if set, else the ESI name, else the default:
+// the owner name for a character wallet, "Division N" for a corporation one.
+func (w Wallet) DisplayName() string {
+	switch {
+	case w.Label != "":
+		return w.Label
+	case w.ESIName != "":
+		return w.ESIName
+	case w.Kind == KindCorporation:
+		return fmt.Sprintf("Division %d", w.Division)
+	default:
+		return w.OwnerName
+	}
+}
+
+// NameSource reports which name DisplayName returns.
+func (w Wallet) NameSource() NameSource {
+	switch {
+	case w.Label != "":
+		return NameCustom
+	case w.ESIName != "":
+		return NameESI
+	default:
+		return NameDefault
+	}
 }
 
 // WalletBalance is a wallet together with its most recent balance.
@@ -83,6 +138,9 @@ var migrations = []string{
 	CREATE UNIQUE INDEX balances_snapshot_uq
 		ON balances (wallet_id, taken_at) WHERE source = 'snapshot';
 	CREATE INDEX balances_wallet_time ON balances (wallet_id, taken_at);`,
+	// 2: wallet names. label is chosen by the user, esi_name comes from ESI.
+	`ALTER TABLE wallets ADD COLUMN label TEXT;
+	ALTER TABLE wallets ADD COLUMN esi_name TEXT;`,
 }
 
 // Store is a SQLite-backed wallet history.
@@ -169,6 +227,65 @@ func (s *Store) UpsertWallet(ctx context.Context, w Wallet) (int64, error) {
 	return id, nil
 }
 
+// SetLabel sets the user-chosen name of a wallet. The name is trimmed and must
+// be 1-64 characters without control characters (ErrInvalidName otherwise).
+func (s *Store) SetLabel(ctx context.Context, walletID int64, name string) error {
+	return s.setName(ctx, "label", walletID, name)
+}
+
+// ClearLabel removes the user-chosen name of a wallet.
+func (s *Store) ClearLabel(ctx context.Context, walletID int64) error {
+	return s.writeName(ctx, "label", walletID, nil)
+}
+
+// SetESIName stores the name ESI reports for a wallet, with the same
+// validation as SetLabel.
+func (s *Store) SetESIName(ctx context.Context, walletID int64, name string) error {
+	return s.setName(ctx, "esi_name", walletID, name)
+}
+
+// ClearESIName removes the stored ESI name of a wallet.
+func (s *Store) ClearESIName(ctx context.Context, walletID int64) error {
+	return s.writeName(ctx, "esi_name", walletID, nil)
+}
+
+func (s *Store) setName(ctx context.Context, column string, walletID int64, name string) error {
+	name, err := validateName(name)
+	if err != nil {
+		return err
+	}
+	return s.writeName(ctx, column, walletID, name)
+}
+
+// writeName updates one of the fixed name columns; column is never user input.
+func (s *Store) writeName(ctx context.Context, column string, walletID int64, value any) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE wallets SET `+column+` = ? WHERE id = ?`, value, walletID)
+	if err != nil {
+		return fmt.Errorf("store: set %s: %w", column, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: set %s: %w", column, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("store: wallet %d: %w", walletID, ErrNotFound)
+	}
+	return nil
+}
+
+func validateName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if n := utf8.RuneCountInString(name); n < 1 || n > maxNameLen {
+		return "", fmt.Errorf("%w: must be 1-%d characters, got %d", ErrInvalidName, maxNameLen, n)
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) {
+			return "", fmt.Errorf("%w: control characters are not allowed", ErrInvalidName)
+		}
+	}
+	return name, nil
+}
+
 // AddSnapshot records a polled balance. Repeating the same wallet and instant
 // is a no-op.
 func (s *Store) AddSnapshot(ctx context.Context, walletID int64, takenAt time.Time, cents int64) error {
@@ -196,7 +313,7 @@ func (s *Store) AddJournalBalance(ctx context.Context, walletID, entryID int64, 
 // Wallets lists all wallets ordered by kind, owner id and division.
 func (s *Store) Wallets(ctx context.Context) ([]Wallet, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, kind, owner_id, owner_name, division
+		SELECT id, kind, owner_id, owner_name, division, label, esi_name
 		FROM wallets ORDER BY kind, owner_id, division`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list wallets: %w", err)
@@ -206,10 +323,12 @@ func (s *Store) Wallets(ctx context.Context) ([]Wallet, error) {
 	for rows.Next() {
 		var w Wallet
 		var kind string
-		if err := rows.Scan(&w.ID, &kind, &w.OwnerID, &w.OwnerName, &w.Division); err != nil {
+		var label, esiName sql.NullString
+		if err := rows.Scan(&w.ID, &kind, &w.OwnerID, &w.OwnerName, &w.Division, &label, &esiName); err != nil {
 			return nil, fmt.Errorf("store: scan wallet: %w", err)
 		}
 		w.Kind = Kind(kind)
+		w.Label, w.ESIName = label.String, esiName.String
 		out = append(out, w)
 	}
 	return out, rows.Err()
@@ -219,7 +338,7 @@ func (s *Store) Wallets(ctx context.Context) ([]Wallet, error) {
 // most recent balance across snapshots and journal entries, in Wallets order.
 func (s *Store) LatestBalances(ctx context.Context) ([]WalletBalance, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT w.id, w.kind, w.owner_id, w.owner_name, w.division, b.taken_at, b.cents
+		SELECT w.id, w.kind, w.owner_id, w.owner_name, w.division, w.label, w.esi_name, b.taken_at, b.cents
 		FROM wallets w
 		JOIN balances b ON b.id = (
 			SELECT id FROM balances
@@ -235,11 +354,13 @@ func (s *Store) LatestBalances(ctx context.Context) ([]WalletBalance, error) {
 		var wb WalletBalance
 		var kind string
 		var at int64
+		var label, esiName sql.NullString
 		if err := rows.Scan(&wb.Wallet.ID, &kind, &wb.Wallet.OwnerID, &wb.Wallet.OwnerName,
-			&wb.Wallet.Division, &at, &wb.Cents); err != nil {
+			&wb.Wallet.Division, &label, &esiName, &at, &wb.Cents); err != nil {
 			return nil, fmt.Errorf("store: scan latest balance: %w", err)
 		}
 		wb.Wallet.Kind = Kind(kind)
+		wb.Wallet.Label, wb.Wallet.ESIName = label.String, esiName.String
 		wb.At = time.Unix(at, 0).UTC()
 		out = append(out, wb)
 	}

@@ -440,3 +440,69 @@ func TestCorporationNameErrors(t *testing.T) {
 		t.Fatalf("err = %v, want not found", err)
 	}
 }
+
+func TestCorporationDivisions(t *testing.T) {
+	c := newTestClient(t, true, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/corporations/900/divisions" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer "+testToken {
+			t.Errorf("Authorization = %q", got)
+		}
+		_, _ = w.Write([]byte(`{
+			"hangar":[{"division":1,"name":"Hangar one"}],
+			"wallet":[{"division":1,"name":"Master"},{"division":3},{"division":4,"name":""},{"division":7,"name":"Ops"}]
+		}`))
+	})
+	got, err := c.CorporationDivisions(context.Background(), testToken, 900)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := DivisionNames{1: "Master", 7: "Ops"}
+	if len(got) != len(want) || got[1] != "Master" || got[7] != "Ops" {
+		t.Fatalf("names = %v, want %v", got, want)
+	}
+}
+
+func TestCorporationDivisionsEmpty(t *testing.T) {
+	for name, body := range map[string]string{
+		"empty arrays":  `{"hangar":[],"wallet":[]}`,
+		"empty object":  `{}`,
+		"hangar only":   `{"hangar":[{"division":2,"name":"x"}],"wallet":[]}`,
+		"null wallet":   `{"hangar":null,"wallet":null}`,
+		"unnamed items": `{"wallet":[{"division":1},{"division":2}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := newTestClient(t, true, func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(body))
+			})
+			got, err := c.CorporationDivisions(context.Background(), testToken, 900)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 0 {
+				t.Fatalf("names = %v, want none", got)
+			}
+		})
+	}
+}
+
+func TestCorporationDivisionsForbidden(t *testing.T) {
+	c := newTestClient(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"Character does not have required role(s)"}`))
+	})
+	_, err := c.CorporationDivisions(context.Background(), testToken, 900)
+	if !IsForbidden(err) {
+		t.Fatalf("IsForbidden false for %v", err)
+	}
+}
+
+func TestCorporationDivisionsMalformed(t *testing.T) {
+	c := newTestClient(t, true, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[1,2]`))
+	})
+	if _, err := c.CorporationDivisions(context.Background(), testToken, 900); err == nil {
+		t.Fatal("want decode error")
+	}
+}
