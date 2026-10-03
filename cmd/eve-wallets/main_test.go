@@ -98,6 +98,7 @@ type harness struct {
 	dbPath    string
 	listeners chan net.Listener
 	openedBin string
+	esi       collector.ESIClient // overrides fakeESI when set
 }
 
 func newHarness(t *testing.T, env map[string]string) *harness {
@@ -123,6 +124,9 @@ func newHarness(t *testing.T, env map[string]string) *harness {
 		newESI: func(ua string) collector.ESIClient {
 			if !strings.HasPrefix(ua, "eve-wallets/") || !strings.HasSuffix(ua, " (local)") {
 				t.Errorf("user agent = %q", ua)
+			}
+			if h.esi != nil {
+				return h.esi
 			}
 			return fakeESI{}
 		},
@@ -529,6 +533,65 @@ func TestServeKeepsServingAfterFailedCollection(t *testing.T) {
 		errs, _ := getJSON(t, base+"/api/status")["errors"].([]any)
 		return len(errs) == 1 && strings.Contains(fmt.Sprint(errs[0]), "boom")
 	})
+	cancel()
+	if code := <-done; code != 0 {
+		t.Errorf("exit = %d", code)
+	}
+}
+
+// corpESI adds a corporation with one division whose journal is forbidden, so
+// the snapshot succeeds and the backfill reports a skipped item.
+type corpESI struct{ fakeESI }
+
+func (corpESI) CharacterCorporationID(context.Context, int64) (int64, error) { return 77, nil }
+func (corpESI) CorporationName(context.Context, int64) (string, error)       { return "Acme", nil }
+func (corpESI) CorporationWallets(context.Context, string, int64) ([]esi.DivisionBalance, error) {
+	return []esi.DivisionBalance{{Division: 1, Cents: 900}}, nil
+}
+func (corpESI) CorporationJournal(context.Context, string, int64, int) ([]esi.JournalEntry, error) {
+	return nil, &esi.APIError{Status: http.StatusForbidden}
+}
+
+func corpHarness(t *testing.T) *harness {
+	h := newHarness(t, map[string]string{"HOME": "/home/u"})
+	h.tokens.chars[0].Scopes = append(h.tokens.chars[0].Scopes, collector.ScopeCorporationWallet)
+	h.esi = corpESI{}
+	return h
+}
+
+func TestServeCycleBackfillsAndMergesStatus(t *testing.T) {
+	h := corpHarness(t)
+	base, cancel, done := startServe(t, h)
+	waitFor(t, "merged cycle in /api/status", func() bool {
+		return getJSON(t, base+"/api/status")["journal_points"] == float64(1)
+	})
+	st := getJSON(t, base+"/api/status")
+	if st["snapshots"] != float64(2) {
+		t.Errorf("snapshots = %v, want 2", st["snapshots"])
+	}
+	skipped, _ := st["skipped"].([]any)
+	if len(skipped) != 1 || !strings.Contains(fmt.Sprint(skipped[0]), "Acme (division 1)") {
+		t.Errorf("skipped = %v, want the forbidden corporation journal", skipped)
+	}
+	cancel()
+	if code := <-done; code != 0 {
+		t.Errorf("exit = %d; stderr = %q", code, h.err.String())
+	}
+}
+
+func TestServeNoBackfill(t *testing.T) {
+	h := corpHarness(t)
+	base, cancel, done := startServe(t, h, "--no-backfill")
+	waitFor(t, "snapshot in /api/status", func() bool {
+		return getJSON(t, base+"/api/status")["snapshots"] == float64(2)
+	})
+	st := getJSON(t, base+"/api/status")
+	if st["journal_points"] != float64(0) {
+		t.Errorf("journal_points = %v, want 0 with --no-backfill", st["journal_points"])
+	}
+	if skipped, _ := st["skipped"].([]any); len(skipped) != 0 {
+		t.Errorf("skipped = %v, want none without the backfill", skipped)
+	}
 	cancel()
 	if code := <-done; code != 0 {
 		t.Errorf("exit = %d", code)

@@ -8,6 +8,7 @@ type StatusSnapshot struct {
 	// TakenAt is the collection time in unix seconds; 0 means none ran yet.
 	TakenAt           int64
 	Snapshots         int
+	JournalPoints     int
 	Skipped           []SkippedItem
 	Errors            []string
 	RateLimited       bool
@@ -24,6 +25,7 @@ type SkippedItem struct {
 func StatusFromReport(r collector.Report) StatusSnapshot {
 	s := StatusSnapshot{
 		Snapshots:         len(r.Snapshots),
+		JournalPoints:     r.JournalPoints,
 		RateLimited:       r.RateLimited,
 		RetryAfterSeconds: int(r.RetryAfter.Seconds()),
 	}

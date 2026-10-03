@@ -2,7 +2,7 @@
 
 A local web app that charts the evolution of every wallet of every authenticated EVE Online character: the personal wallet plus the corporation wallet divisions the character can read.
 
-ESI only returns the current balance and 30 days of wallet journal. To get a longer history the app snapshots balances periodically, and it can backfill the last 30 days from the journal.
+ESI only returns the current balance and 30 days of wallet journal. To get a longer history the app snapshots balances periodically, and it backfills the last 30 days from the journal.
 
 ## Requirements
 
@@ -25,17 +25,16 @@ export EVE_CLIENT_ID=<your-client-id>
 eve-auth login --scopes "publicData esi-wallet.read_character_wallet.v1 esi-wallet.read_corporation_wallets.v1"
 
 go build -o eve-wallets ./cmd/eve-wallets
-./eve-wallets backfill    # optional: last 30 days from the journals
-./eve-wallets serve       # http://127.0.0.1:8088
+./eve-wallets serve       # http://127.0.0.1:8088; the first cycle also fills the last 30 days from the journals
 ```
 
 ## Usage
 
 | Command | What it does |
 |---------|--------------|
-| `eve-wallets serve [--addr 127.0.0.1:8088] [--db PATH] [--every 30m] [--no-collect]` | Serves the charts and collects in the background. |
+| `eve-wallets serve [--addr 127.0.0.1:8088] [--db PATH] [--every 30m] [--no-collect] [--no-backfill]` | Serves the charts and, in the background, takes a snapshot and backfills the journal every cycle. |
 | `eve-wallets collect [--db PATH]` | One snapshot of every wallet, prints a summary. |
-| `eve-wallets backfill [--db PATH]` | Stores journal balances of the last 30 days. Idempotent. `serve` does not run it. |
+| `eve-wallets backfill [--db PATH]` | Stores journal balances of the last 30 days. Idempotent. `serve` runs it every cycle unless `--no-backfill` is given, so run it by hand only for a one-off backfill without `serve`. |
 | `eve-wallets wallets [--db PATH]` | Lists the wallets (id, kind, owner, division, displayed name and its source). No network, no `eve-auth`. |
 | `eve-wallets label [--db PATH] <wallet-id> <name...>` | Sets the name shown for a wallet. `--clear <wallet-id>` removes it. |
 
@@ -44,6 +43,7 @@ go build -o eve-wallets ./cmd/eve-wallets
 - `--addr`: default `127.0.0.1:8088`. Only loopback (`127.0.0.1`, `::1`, `localhost`) is accepted; anything else exits with code 2.
 - `--every`: collection interval, default `30m`, minimum `1m`.
 - `--no-collect`: serve existing data without calling ESI.
+- `--no-backfill`: each cycle only takes snapshots (like `collect`) and does not read the journals. The cycle skips the backfill by itself when its snapshot was rate limited.
 
 Environment variables:
 
@@ -57,7 +57,7 @@ Default database: `$XDG_DATA_HOME/eve-wallets/wallets.db`, else `~/.local/share/
 
 Upgrading: the database schema is migrated automatically when the app opens it, and a binary older than the database refuses to open it. Stop the app and copy the database file before upgrading, so you can go back.
 
-The page shows a balance history chart with one line per selected wallet, an optional Total line, time ranges (24 h, 7 d, 30 d, All), a table of latest balances, and the result of the last collection. Without data it asks you to run `eve-wallets collect`.
+The page shows a balance history chart with one line per selected wallet, an optional Total line, time ranges (24 h, 7 d, 30 d, All), a table of latest balances, and the result of the last collection. `/api/status` also reports `journal_points`, the journal balances the last backfill saw (0 when it did not run); the page does not display it. Without data it asks you to run `eve-wallets collect`.
 
 ## Wallet names
 
@@ -82,8 +82,9 @@ Optionally, `eve-wallets collect` can fetch the division names from ESI. It need
 ## How history works, and its limits
 
 - Snapshots exist only while `serve` (or a manual or cron `collect`) runs. While it is off there are gaps.
+- Every `serve` cycle (default 30 min) also stores the journal balances of the last 30 days, so per-transaction detail is kept while `serve` runs. ESI only holds 30 days of journal: if more than 30 days pass without a backfill (`serve` or `backfill`), the detail of the older days is lost for good, and only snapshots remain for that gap.
 - Backfill covers only the last 30 days (the ESI journal window), and only journal entries that carry a balance.
-- ESI caching: wallet balance 2 min for characters and 5 min for corporations; journal 1 h. Rate limits: 150 tokens per 15 min for character wallets and 300 for corporation wallets (read from the ESI OpenAPI spec). On a rate limit the run is reported as partial and retried later.
+- ESI caching: wallet balance 2 min for characters and 5 min for corporations; journal 1 h. Rate limits: 150 tokens per 15 min for character wallets and 300 for corporation wallets (read from the ESI OpenAPI spec). On a rate limit the run is reported as partial and retried later; the journal backfill is skipped in a cycle whose snapshot was rate limited. If you hit rate limits, use `--no-backfill`.
 - Money is stored as integer ISK cents, never floats. ESI amounts have up to four decimals (for example `3123652530.8712`); they are parsed exactly from the response text and rounded to the nearest cent (half away from zero) when stored.
 
 ## Security notes
@@ -117,6 +118,7 @@ The tests use fakes or a temporary SQLite database (`CGO_ENABLED=0 go test ./...
 
 Not covered:
 
+- The `serve` cycle that backfills the journal every time (and `--no-backfill`) is covered by fakes only; it has not been run against the real ESI.
 - `go test -race` has not been run (the development environment has no C compiler).
 - The JavaScript of the page has no automated tests.
 - The division names path was run against the real ESI only with a character that is not a Director, which ends in the `missing Director role` skip. The case where a Director receives the names (stored with source `esi`, and cleared for divisions that return to the default name) is covered by fakes only.

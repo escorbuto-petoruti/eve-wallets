@@ -95,6 +95,9 @@ type Report struct {
 	RetryAfter  time.Duration
 	// NamesUpdated counts the wallets whose ESI name was set or cleared.
 	NamesUpdated int
+	// JournalPoints counts the journal balances a backfill saw in the same
+	// cycle. Run leaves it 0; the serve cycle fills it in.
+	JournalPoints int
 }
 
 // Collector runs snapshot collections.
