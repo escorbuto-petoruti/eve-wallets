@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>EVE wallets</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>EVE wallets</h1>
+  <p id="updated" class="muted"></p>
+</header>
+<main>
+  <section id="empty" class="card" hidden>
+    <h2>No data yet</h2>
+    <p>No wallet balances have been collected. Run <code>eve-wallets collect</code> and reload this page.</p>
+  </section>
+
+  <section id="controls" class="card" hidden>
+    <h2>Wallets</h2>
+    <div id="picker"></div>
+    <div class="row">
+      <div id="ranges" role="group" aria-label="Time range">
+        <button type="button" data-range="86400">24 h</button>
+        <button type="button" data-range="604800">7 d</button>
+        <button type="button" data-range="2592000" class="active" aria-pressed="true">30 d</button>
+        <button type="button" data-range="0">All</button>
+      </div>
+      <label class="check"><input type="checkbox" id="total"> Total</label>
+    </div>
+  </section>
+
+  <section id="chart-card" class="card" hidden>
+    <h2>Balance history</h2>
+    <p id="chart-note" class="muted"></p>
+    <div class="chart-box"><canvas id="chart" role="img" aria-label="Wallet balance history"></canvas></div>
+  </section>
+
+  <section id="latest-card" class="card" hidden>
+    <h2>Latest balances</h2>
+    <div class="scroll">
+      <table id="latest">
+        <thead><tr><th>Owner</th><th>Wallet</th><th class="num">Balance (ISK)</th><th>As of</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="status-card" class="card">
+    <h2>Last collection</h2>
+    <div id="status"></div>
+  </section>
+</main>
+<script src="/static/chart.umd.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

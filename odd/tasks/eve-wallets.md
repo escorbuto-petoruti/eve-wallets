@@ -1,0 +1,55 @@
+# eve-wallets
+
+## Objective
+Local Go web app that shows, with charts, the evolution of every wallet of every authenticated EVE character: the personal wallet and the corporation wallet divisions the character can read.
+
+## Problem / why
+ESI exposes only the current balance (`/wallets`) and a 30-day journal, so history must be snapshotted by the app. Journal entries carry a running `balance`, which allows backfilling the first 30 days.
+
+## Decisions
+- Go. SQLite through `modernc.org/sqlite` (pure Go; this environment has no C compiler). Chart.js vendored and embedded (works offline). Simple server-rendered page plus a JSON API.
+- Tokens: a `TokenSource` that shells out to the `eve-auth` binary (`eve-auth token <id>`, `eve-auth list`). Path configurable with `EVE_AUTH_BIN`; `EVE_CLIENT_ID` is passed through. This app never stores tokens.
+- Snapshots: background loop inside `eve-wallets serve` (default every 30 min) plus a manual `eve-wallets collect`.
+- Money is stored as integer ISK cents, never floats.
+- ESI facts (verified in the OpenAPI spec): base `https://esi.evetech.net`; required header `X-Compatibility-Date: 2020-01-01`; character wallet scope `esi-wallet.read_character_wallet.v1` (no roles); corporation wallet scope `esi-wallet.read_corporation_wallets.v1` and role Accountant or Junior_Accountant; journal is 30 days back and paginated with `X-Pages`; rate limits 150 tokens/15 min (character) and 300 tokens/15 min (corp). Honor ETag/Cache-Control.
+
+## Constraints
+- Module `github.com/escorbuto-petoruti/eve-wallets`. Layout: `cmd/eve-wallets`, `internal/store`, `internal/esi`, `internal/auth`, `internal/collector`, `internal/web`.
+- No tokens or secrets in logs, DB or the repo. DB file ignored by git.
+- A character without the corp role must degrade gracefully (skip the corp wallet, record why), never abort the whole collection.
+- Out of scope for the MVP: multi-user auth, deployment, alerts, transactions endpoint, division names.
+
+## Tasks
+- [x] T1 module scaffold + `internal/store` (SQLite schema, snapshots as integer cents, migrations, queries for series) + tests
+- [x] T2 `internal/esi` client (headers, ETag, wallet balance, journal with pagination, character to corporation id) + httptest tests
+- [x] T3 `internal/auth` TokenSource over `eve-auth` + `internal/collector` (snapshot all characters, graceful corp-role failure) + tests
+- [x] T4 `internal/web`: `web.New(Deps{Store, Status})`, JSON API, embedded offline Chart.js page, hardening headers
+- [x] T5 `cmd/eve-wallets`: `serve` (web + background collect loop) and `collect`
+- [x] T6 journal backfill of the last 30 days (idempotent, deduplicated)
+- [x] T7 README: setup (eve-auth install, scopes, login), usage, limits
+
+## Routing / test policy
+- Test-first with `go test ./...`; ESI and `eve-auth` faked. One delegated writer per task, one Conventional Commit per task on the feature branch.
+- Native review boundary: branch point (initial commit on `main`).
+
+## Progress
+Branch `feat/eve-wallets-mvp`, initial commit on `main` (local, not pushed). T1 done (delegated writer, test-first: RED observed on undefined symbols, then GREEN). `internal/store` with versioned migrations (`PRAGMA user_version`), WAL, FKs, partial unique indexes for journal/snapshot idempotency. Evidence: `CGO_ENABLED=0 go vet ./...` clean; `go test ./...` ok; `go test -count=10 ./...` ok; `gofmt -l .` empty. Commit: `feat(store): add SQLite wallet balance store`.
+
+T2 done (delegated writer, test-first: RED observed on undefined symbols, then GREEN). `internal/esi`: `Client` with `CharacterWallet`, `CorporationWallets`, `CharacterJournal`, `CorporationJournal` (all pages, cap 50), `CharacterCorporationID`; exact cents via `ParseCents` (no float; exponent forms rejected; sub-cent amounts were first rejected, see the fix below); `*APIError`, `*RateLimitError` (420/429, Retry-After), `IsForbidden`/`IsNotFound`; ETag cache keyed by URL + token hash, 304 reuse, errors never cached; token scrubbed from errors. Evidence: `CGO_ENABLED=0 go vet ./...` clean; `go test ./...` ok; `go test -count=10 ./...` ok; `gofmt -l .` empty. Commit: `feat(esi): add ESI wallet client`.
+
+T3 done (delegated writer, test-first: RED observed on undefined symbols in both packages, then GREEN). `internal/auth`: `TokenSource`, `EveAuth` (injectable `Runner`, no shell, bounded and scrubbed stderr, token validated and never in errors, per-call timeout). `internal/collector`: `New(Deps).Run` with shared truncated `takenAt`, scope-based skips, 403 to `missing corporation role`, one snapshot per corp per run, per-item errors, rate-limit partial report (`RateLimited`, `RetryAfter`), ctx cancel. `internal/esi`: added `CorporationName`. Evidence: `CGO_ENABLED=0 go vet ./...` clean; `go test ./...` ok; `go test -count=10 ./...` ok; `gofmt -l .` empty. Commit: `feat(collector): collect wallet snapshots through eve-auth`.
+
+T4 done (delegated writer, test-first: RED observed on undefined symbols, then GREEN). `internal/web`: GET/HEAD only (405 with `Allow`), CSP `default-src 'self'`, nosniff, no-referrer on every response, no CORS, no directory listing (explicit static allowlist). API: `/api/wallets` (null cents when a wallet has no balance), `/api/series` (strict ids/RFC 3339 validation, caps: 50 ids and 10 years, unknown id gives empty series, optional `total=1` computed server-side by `SumForwardFill`), `/api/status` from `Deps.Status` (`StatusFromReport` adapts `collector.Report`). Page in plain JS/CSS embedded files (no inline scripts, `textContent` only, one chart with a line per selected wallet plus optional Total). Chart.js 4.5.1 vendored (MIT, sha256 in `internal/web/static/VENDORED.md`). Evidence: `CGO_ENABLED=0 go vet ./...` clean; `go test ./...` ok; `go test -count=10 ./internal/web/...` ok; `gofmt -l .` empty; smoke via throwaway server: `/`, `/api/wallets`, `/api/series` all 200. Commit: `feat(web): add wallet charts UI and JSON API`.
+
+T5 done (delegated writer; test-first for `cmd/eve-wallets`: RED observed on undefined symbols, then GREEN; the `internal/scheduler` tests and code were written together, so no separate RED there). `internal/scheduler`: `Loop{Every, Run, OnResult, Wait}.Start(ctx)` runs once immediately, waits `Every` after each run (no overlap), delays by `RetryAfter` only when `RateLimited` and longer than `Every`, survives run errors, stops on cancel during a wait or a run. `cmd/eve-wallets`: `run(ctx, args, deps)` with injected IO, env, store opener, token source, ESI factory and listener; `collect` (summary without tokens, exit 1 only on fatal error, clear `eve-auth` not found hint), `serve` (loopback-only `--addr` with no bypass, `--every` minimum 1m, `--no-collect`, `http.Server` timeouts, graceful shutdown: loop stopped, then `Shutdown`, then store closed); DB path order flag, `EVE_WALLETS_DB`, XDG, `~/.local/share`; dir 0700 and db/-wal/-shm 0600; user agent `eve-wallets/<version> (local)` with `-ldflags -X main.version`. Evidence: `CGO_ENABLED=0 go vet ./...` clean; `go test ./...` ok; `go test -count=10 ./internal/scheduler/... ./cmd/...` ok; `gofmt -l .` empty; built binary: `help` exit 2 with usage, `serve --addr 0.0.0.0:8088` refused with exit 2. Commit: `feat(cli): add serve and collect commands with a background loop`.
+
+T6 done (delegated writer; test-first: RED observed on undefined `Backfill`/`printBackfillReport`, then GREEN). `internal/collector`: discovery and walk logic extracted into a shared `walker` used by `Run` and the new `Backfill(ctx) (BackfillReport, error)` (same scope, personal/corporation, once-per-corp, 403 skip, rate-limit partial and ctx rules; `Run` tests unchanged). Backfill upserts each wallet, then stores every journal entry with a balance through `AddJournalBalance` (idempotent per entry id); entries without balance are counted; per-wallet `Points`/`NoBalance`, skips, errors, `RateLimited`/`RetryAfter`, no tokens. `ESIClient` gained the two journal methods and `StoreWriter` gained `AddJournalBalance`. `cmd/eve-wallets`: `backfill [--db PATH]` (shared one-shot wiring with `collect`, summary, exit 1 only on fatal error, usage updated); `serve` does not run it. Evidence: `CGO_ENABLED=0 go vet ./...` clean; `go test ./...` ok; `go test -count=10 ./internal/collector/... ./cmd/...` ok; `gofmt -l .` empty. Commit: `feat(collector): backfill 30 days of history from wallet journals`.
+
+Review note: the native review of T4 was escalated on a false positive caused by splitting the vendored Chart.js out of the reviewed range; the user decided to continue under ordinary repository policy (the review boundary for later assessments is 359b16f).
+
+T7 done (delegated writer, docs only, no RED applicable). `README.md` covers requirements, setup, usage (flags, env vars, DB path and modes), history limits, security notes, architecture, development and an honest status (not run against real ESI/eve-auth, UI not checked in a browser). Every flag, env var and default was checked against `cmd/eve-wallets/main.go`. Evidence: `CGO_ENABLED=0 go build ./...` and `go test ./...` ok. Commit: `docs: add README with setup, usage and limits`.
+
+Fix after the first real ESI run: ESI amounts have four decimals (for example `3123652530.8712`), which the parser rejected, so the journal and corporation wallet failed. `ParseCents` now rounds to the nearest cent, half away from zero, with exact decimal string arithmetic; tests (RED then GREEN) include the real values, rounding boundaries, int64 limits and a client-level four-decimal test; README states the rounding. Evidence: `go vet`, `go test ./...`, `go test -count=10 ./internal/esi/...` ok; `gofmt -l .` empty. Commit: `fix(esi): round sub-cent ISK amounts to the nearest cent`.
+
+## Next step
+Open a PR from `feat/eve-wallets-mvp`; delivery (push, PR, merge) is the user's decision.
