@@ -246,3 +246,137 @@ func TestNoOverlap(t *testing.T) {
 		t.Errorf("runs = %d, want >= 5", runs.Load())
 	}
 }
+
+// startLoop runs a loop whose Run reports each start on runs and, when gate is
+// not nil, blocks until it receives from gate.
+func startLoop(t *testing.T, fw *fakeWait, gate chan struct{}) (*Loop, chan int, context.CancelFunc) {
+	t.Helper()
+	runs := make(chan int, 20)
+	var n atomic.Int32
+	l := &Loop{
+		Every: time.Hour,
+		Run: func(ctx context.Context) (collector.Report, error) {
+			runs <- int(n.Add(1))
+			if gate != nil {
+				select {
+				case <-gate:
+				case <-ctx.Done():
+				}
+			}
+			return collector.Report{}, nil
+		},
+		Wait: fw.wait,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = l.Start(ctx) }()
+	return l, runs, cancel
+}
+
+func TestTriggerRunsWithoutWaitingForTheInterval(t *testing.T) {
+	fw := newFakeWait()
+	l, runs, _ := startLoop(t, fw, nil)
+	recv(t, runs)
+	recv(t, fw.delays) // waiting for the next interval
+	l.Trigger()
+	if got := recv(t, runs); got != 2 {
+		t.Fatalf("run after trigger = %d, want 2", got)
+	}
+	if d := recv(t, fw.delays); d != time.Hour {
+		t.Errorf("delay after triggered run = %v, want the normal interval", d)
+	}
+}
+
+func TestTriggerBeforeStartRunsOnceMore(t *testing.T) {
+	fw := newFakeWait()
+	runs := make(chan int, 10)
+	var n int
+	l := &Loop{Every: time.Hour, Wait: fw.wait, Run: func(context.Context) (collector.Report, error) {
+		n++
+		runs <- n
+		return collector.Report{}, nil
+	}}
+	l.Trigger()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = l.Start(ctx) }()
+	recv(t, runs)
+	if got := recv(t, runs); got != 2 {
+		t.Fatalf("second run = %d, want 2 (pending trigger)", got)
+	}
+}
+
+func TestTriggerDuringRunDoesNotOverlapAndCoalesces(t *testing.T) {
+	fw := newFakeWait()
+	gate := make(chan struct{})
+	var active, maxActive atomic.Int32
+	runs := make(chan int, 20)
+	var n atomic.Int32
+	l := &Loop{Every: time.Hour, Wait: fw.wait, Run: func(context.Context) (collector.Report, error) {
+		cur := active.Add(1)
+		if cur > maxActive.Load() {
+			maxActive.Store(cur)
+		}
+		runs <- int(n.Add(1))
+		<-gate
+		active.Add(-1)
+		return collector.Report{}, nil
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = l.Start(ctx) }()
+
+	recv(t, runs)
+	for i := 0; i < 5; i++ {
+		l.Trigger() // never blocks, even while a run is in progress
+	}
+	gate <- struct{}{} // first run ends; the five triggers coalesce into one run
+	if got := recv(t, runs); got != 2 {
+		t.Fatalf("run after coalesced triggers = %d, want 2", got)
+	}
+	gate <- struct{}{}
+	recv(t, fw.delays) // back to waiting: no third run was queued
+	select {
+	case got := <-runs:
+		t.Fatalf("unexpected extra run %d", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if maxActive.Load() != 1 {
+		t.Errorf("runs overlapped: max concurrent = %d", maxActive.Load())
+	}
+}
+
+func TestTriggerIsIgnoredWhileRateLimited(t *testing.T) {
+	fw := newFakeWait()
+	runs := make(chan int, 10)
+	var n int
+	l := &Loop{Every: time.Minute, Wait: fw.wait, Run: func(context.Context) (collector.Report, error) {
+		n++
+		runs <- n
+		return collector.Report{RateLimited: true, RetryAfter: time.Hour}, nil
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = l.Start(ctx) }()
+	recv(t, runs)
+	if d := recv(t, fw.delays); d != time.Hour {
+		t.Fatalf("delay = %v, want 1h", d)
+	}
+	l.Trigger()
+	select {
+	case got := <-runs:
+		t.Fatalf("run %d started while rate limited", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestTriggerAfterCancelDoesNotBlock(t *testing.T) {
+	fw := newFakeWait()
+	l, runs, cancel := startLoop(t, fw, nil)
+	recv(t, runs)
+	recv(t, fw.delays)
+	cancel()
+	for i := 0; i < 3; i++ {
+		l.Trigger()
+	}
+}
