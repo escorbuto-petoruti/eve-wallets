@@ -23,9 +23,10 @@ ESI exposes only the current balance (`/wallets`) and a 30-day journal, so histo
 - [x] T1 module scaffold + `internal/store` (SQLite schema, snapshots as integer cents, migrations, queries for series) + tests
 - [x] T2 `internal/esi` client (headers, ETag, wallet balance, journal with pagination, character to corporation id) + httptest tests
 - [x] T3 `internal/auth` TokenSource over `eve-auth` + `internal/collector` (snapshot all characters, graceful corp-role failure) + tests
-- [ ] T4 `internal/web` + `cmd/eve-wallets`: `serve` (JSON API, embedded Chart.js page, background loop) and `collect`
-- [ ] T5 journal backfill of the last 30 days (idempotent, deduplicated)
-- [ ] T6 README: setup (eve-auth install, scopes, login), usage, limits
+- [x] T4 `internal/web`: `web.New(Deps{Store, Status})`, JSON API, embedded offline Chart.js page, hardening headers
+- [ ] T5 `cmd/eve-wallets`: `serve` (web + background collect loop) and `collect`
+- [ ] T6 journal backfill of the last 30 days (idempotent, deduplicated)
+- [ ] T7 README: setup (eve-auth install, scopes, login), usage, limits
 
 ## Routing / test policy
 - Test-first with `go test ./...`; ESI and `eve-auth` faked. One delegated writer per task, one Conventional Commit per task on the feature branch.
@@ -38,5 +39,7 @@ T2 done (delegated writer, test-first: RED observed on undefined symbols, then G
 
 T3 done (delegated writer, test-first: RED observed on undefined symbols in both packages, then GREEN). `internal/auth`: `TokenSource`, `EveAuth` (injectable `Runner`, no shell, bounded and scrubbed stderr, token validated and never in errors, per-call timeout). `internal/collector`: `New(Deps).Run` with shared truncated `takenAt`, scope-based skips, 403 to `missing corporation role`, one snapshot per corp per run, per-item errors, rate-limit partial report (`RateLimited`, `RetryAfter`), ctx cancel. `internal/esi`: added `CorporationName`. Evidence: `CGO_ENABLED=0 go vet ./...` clean; `go test ./...` ok; `go test -count=10 ./...` ok; `gofmt -l .` empty. Commit: `feat(collector): collect wallet snapshots through eve-auth`.
 
+T4 done (delegated writer, test-first: RED observed on undefined symbols, then GREEN). `internal/web`: GET/HEAD only (405 with `Allow`), CSP `default-src 'self'`, nosniff, no-referrer on every response, no CORS, no directory listing (explicit static allowlist). API: `/api/wallets` (null cents when a wallet has no balance), `/api/series` (strict ids/RFC 3339 validation, caps: 50 ids and 10 years, unknown id gives empty series, optional `total=1` computed server-side by `SumForwardFill`), `/api/status` from `Deps.Status` (`StatusFromReport` adapts `collector.Report`). Page in plain JS/CSS embedded files (no inline scripts, `textContent` only, one chart with a line per selected wallet plus optional Total). Chart.js 4.5.1 vendored (MIT, sha256 in `internal/web/static/VENDORED.md`). Evidence: `CGO_ENABLED=0 go vet ./...` clean; `go test ./...` ok; `go test -count=10 ./internal/web/...` ok; `gofmt -l .` empty; smoke via throwaway server: `/`, `/api/wallets`, `/api/series` all 200. Commit: `feat(web): add wallet charts UI and JSON API`.
+
 ## Next step
-T4: `internal/web` + `cmd/eve-wallets` (`serve`, `collect`).
+T5: `cmd/eve-wallets` (`serve` with background collect loop wired to `web.StatusFromReport`, and `collect`).
