@@ -43,6 +43,7 @@ type Deps struct {
 type server struct {
 	deps  Deps
 	flows *loginFlows
+	moves *pendingMoves
 }
 
 func (s *server) now() time.Time { return s.deps.Now() }
@@ -54,11 +55,13 @@ func New(deps Deps) http.Handler {
 	}
 	s := &server{deps: deps}
 	s.flows = newLoginFlows(s.now)
+	s.moves = newPendingMoves(s.now)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/{$}", s.index)
 	mux.HandleFunc("/static/{name}", s.static)
 	mux.HandleFunc("GET /auth/login", s.login)
 	mux.HandleFunc("GET /auth/callback", s.callback)
+	mux.HandleFunc("GET /auth/add-character", s.addCharacter)
 	mux.HandleFunc("POST /auth/logout", s.logout)
 	mux.HandleFunc("/api/me", requireUser(s.me))
 	mux.HandleFunc("/api/wallets", requireUser(s.wallets))

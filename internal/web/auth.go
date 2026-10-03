@@ -61,16 +61,27 @@ type loginFlows struct {
 	m   map[string]loginFlow
 }
 
+// flowIntent says what a sign-in round trip is for.
+type flowIntent int
+
+const (
+	intentLogin flowIntent = iota // sign in, creating a session
+	intentAdd                     // attach the character to the signed-in user
+)
+
 type loginFlow struct {
 	verifier string
-	expires  time.Time
+	intent   flowIntent
+	// userID is the user an add flow was started for (never a character id).
+	userID  int64
+	expires time.Time
 }
 
 func newLoginFlows(now func() time.Time) *loginFlows {
 	return &loginFlows{now: now, m: make(map[string]loginFlow)}
 }
 
-func (l *loginFlows) add(state, verifier string) {
+func (l *loginFlows) add(state, verifier string, intent flowIntent, userID int64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
@@ -89,19 +100,19 @@ func (l *loginFlows) add(state, verifier string) {
 		}
 		delete(l.m, oldest)
 	}
-	l.m[state] = loginFlow{verifier: verifier, expires: now.Add(loginTTL)}
+	l.m[state] = loginFlow{verifier: verifier, intent: intent, userID: userID, expires: now.Add(loginTTL)}
 }
 
 // take consumes the flow of state: a second call always misses.
-func (l *loginFlows) take(state string) (string, bool) {
+func (l *loginFlows) take(state string) (loginFlow, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	f, ok := l.m[state]
 	delete(l.m, state)
 	if !ok || !l.now().Before(f.expires) {
-		return "", false
+		return loginFlow{}, false
 	}
-	return f.verifier, true
+	return f, true
 }
 
 func (l *loginFlows) size() int {
@@ -111,6 +122,11 @@ func (l *loginFlows) size() int {
 }
 
 func (s *server) login(w http.ResponseWriter, r *http.Request) {
+	s.beginFlow(w, r, intentLogin, 0)
+}
+
+// beginFlow registers a flow and sends the browser to EVE SSO.
+func (s *server) beginFlow(w http.ResponseWriter, r *http.Request, intent flowIntent, userID int64) {
 	if s.deps.SSO == nil {
 		errorPage(w, http.StatusServiceUnavailable, "Sign-in is not available.")
 		return
@@ -121,7 +137,7 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 		errorPage(w, http.StatusInternalServerError, "Could not start the sign-in.")
 		return
 	}
-	s.flows.add(state, verifier)
+	s.flows.add(state, verifier, intent, userID)
 	http.SetCookie(w, &http.Cookie{
 		Name: loginCookie, Value: state, Path: "/auth", MaxAge: int(loginTTL / time.Second),
 		HttpOnly: true, SameSite: http.SameSiteLaxMode,
@@ -139,7 +155,7 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	state := q.Get("state")
-	verifier, known := s.flows.take(state) // single use, whatever happens next
+	flow, known := s.flows.take(state) // single use, whatever happens next
 	cookie, err := r.Cookie(loginCookie)
 	bound := err == nil && subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(state)) == 1
 	clearCookie(w, loginCookie, "/auth")
@@ -158,7 +174,7 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	tokens, err := s.deps.SSO.Exchange(ctx, code, verifier)
+	tokens, err := s.deps.SSO.Exchange(ctx, code, flow.verifier)
 	if err != nil || tokens.RefreshToken == "" {
 		errorPage(w, http.StatusBadGateway, "EVE SSO could not complete the sign-in. Try again.")
 		return
@@ -166,6 +182,11 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 	claims, err := s.deps.SSO.Validate(ctx, tokens.AccessToken)
 	if err != nil || claims.CharacterID <= 0 {
 		errorPage(w, http.StatusBadGateway, "EVE SSO could not complete the sign-in. Try again.")
+		return
+	}
+
+	if flow.intent == intentAdd {
+		s.finishAdd(w, r, flow, tokens, claims)
 		return
 	}
 
