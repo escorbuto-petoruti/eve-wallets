@@ -32,8 +32,10 @@
   function formatISK(cents) { return iskFmt.format(cents / 100); }
   function formatTime(unix) { return new Date(unix * 1000).toLocaleString(); }
 
+  // walletLabel is the character name or "<corporation> \u00b7 <name>".
   function walletLabel(w) {
-    return w.kind === "character" ? "Personal wallet" : "Corporation division " + w.division;
+    var name = w.name || (w.kind === "character" ? w.owner_name : "Division " + w.division);
+    return w.kind === "character" ? name : w.owner_name + " \u00b7 " + name;
   }
   function ownerLabel(w) {
     return w.owner_name + " (" + (w.kind === "character" ? "character" : "corporation") + ")";
@@ -121,7 +123,7 @@
     var datasets = resp.series.map(function (s, i) {
       var w = state.wallets.find(function (x) { return x.id === s.wallet_id; });
       return {
-        label: w ? ownerLabel(w) + " / " + walletLabel(w) : "Wallet " + s.wallet_id,
+        label: w ? walletLabel(w) : "Wallet " + s.wallet_id,
         data: s.points.map(function (p) { return { x: p.t * 1000, y: p.cents / 100 }; }),
         borderColor: PALETTE[i % PALETTE.length],
         backgroundColor: PALETTE[i % PALETTE.length],

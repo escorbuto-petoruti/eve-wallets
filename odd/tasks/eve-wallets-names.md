@@ -20,7 +20,7 @@ In game, corporation wallet divisions carry custom names. ESI exposes them throu
 ## Tasks
 - [x] T1 store: migration 2 (`label`, `esi_name`), setters, effective name and source in the wallet queries + tests (route: delegated writer; RED observed as compile failure, GREEN: vet, `go test ./...`, `-count=10` store, gofmt clean)
 - [x] T2 esi + collector: `CorporationDivisions`, collector integration (once per corporation, graceful skips) + tests (route: delegated writer; RED observed for the collector tests, GREEN: vet, `go test ./...`, `-count=10` esi+collector, gofmt clean; scope also edited the `fakeESI` in `cmd/eve-wallets/main_test.go` so it still satisfies `ESIClient`)
-- [ ] T3 cmd + web + README: `wallets` and `label` commands, API fields `name` and `name_source`, page shows names, docs
+- [x] T3 cmd + web + README: `wallets` and `label` commands, API fields `name` and `name_source`, page shows names, docs (route: delegated writer; RED observed for the CLI and web tests, GREEN: vet, `go test ./...`, `-count=10` cmd+web, gofmt clean, smoke on a temporary database)
 
 ## Routing / test policy
 - Test-first with `go test ./...`; ESI faked. One delegated writer per task, one Conventional Commit per task on `feat/wallet-names`, stacked on `feat/eve-wallets-mvp` (HEAD fce3c36, unpushed).
@@ -28,6 +28,7 @@ In game, corporation wallet divisions carry custom names. ESI exposes them throu
 
 ## Progress
 Branch `feat/wallet-names` created from `feat/eve-wallets-mvp`. T1 done: migration 2, `SetLabel`/`ClearLabel`/`SetESIName`/`ClearESIName`, `ErrInvalidName`, `ErrNotFound`, `Wallet.DisplayName()`/`NameSource()`, tests in `internal/store/names_test.go`. T2 done: `esi.CorporationDivisions` (wallet names only, hangar parsed and ignored), `Report.NamesUpdated`, `ReasonMissingDirector`, names refreshed once per corporation in `Run` only (no scope: silent; 403: skip, a later character may succeed; failures leave stored names untouched), tests in `internal/collector/names_test.go` and `internal/esi/client_test.go`.
+T3 done: `wallets` and `label` commands (`cmd/eve-wallets/names.go`, tests with a real SQLite file in `names_test.go`), `/api/wallets` gains `name` and `name_source`, `app.js` shows `<corporation> · <name>` via `textContent`, README section on wallet names. The API stays GET/HEAD only.
 
 ## Next step
-T3.
+Open a PR for `feat/wallet-names` (delivery is the user's call).

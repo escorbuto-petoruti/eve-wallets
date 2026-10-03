@@ -36,6 +36,8 @@ go build -o eve-wallets ./cmd/eve-wallets
 | `eve-wallets serve [--addr 127.0.0.1:8088] [--db PATH] [--every 30m] [--no-collect]` | Serves the charts and collects in the background. |
 | `eve-wallets collect [--db PATH]` | One snapshot of every wallet, prints a summary. |
 | `eve-wallets backfill [--db PATH]` | Stores journal balances of the last 30 days. Idempotent. `serve` does not run it. |
+| `eve-wallets wallets [--db PATH]` | Lists the wallets (id, kind, owner, division, displayed name and its source). No network, no `eve-auth`. |
+| `eve-wallets label [--db PATH] <wallet-id> <name...>` | Sets the name shown for a wallet. `--clear <wallet-id>` removes it. |
 
 `serve` flags:
 
@@ -55,6 +57,26 @@ Default database: `$XDG_DATA_HOME/eve-wallets/wallets.db`, else `~/.local/share/
 
 The page shows a balance history chart with one line per selected wallet, an optional Total line, time ranges (24 h, 7 d, 30 d, All), a table of latest balances, and the result of the last collection. Without data it asks you to run `eve-wallets collect`.
 
+## Wallet names
+
+Corporation divisions are shown as `<corporation> · <name>` and the character wallet as the character name, in the picker, the latest balances table and the chart legend. The displayed name is, in order of precedence:
+
+1. your label (source `custom`),
+2. the division name reported by ESI (source `esi`),
+3. the default: `Division N` for a corporation wallet, the character name for a character wallet (source `default`).
+
+A label is never overwritten by a collection. Rename from the CLI; the page shows the change when you refresh it (the HTTP API is read-only, there is no write endpoint):
+
+```bash
+./eve-wallets wallets                       # find the wallet id
+./eve-wallets label 3 Mining fund           # quotes are optional
+./eve-wallets label --clear 3               # back to the ESI name or Division N
+```
+
+A name is 1-64 characters without control characters. `--db` goes before the wallet id, and an unknown or invalid id exits with code 1.
+
+Optionally, `eve-wallets collect` can fetch the division names from ESI. It needs the scope `esi-corporations.read_divisions.v1` (add it to the `eve-auth login --scopes` list) and the in-game role Director. Without them the names are simply not fetched and `Division N` or your labels are shown. ESI only returns the divisions whose name is not the default, and the in-game default division names were not verified, so the fallback is `Division N`.
+
 ## How history works, and its limits
 
 - Snapshots exist only while `serve` (or a manual or cron `collect`) runs. While it is off there are gaps.
@@ -71,9 +93,9 @@ The page shows a balance history chart with one line per selected wallet, an opt
 
 ## Architecture
 
-- `cmd/eve-wallets`: CLI (`serve`, `collect`, `backfill`) and wiring.
-- `internal/store`: SQLite (pure Go, `modernc.org/sqlite`) schema, migrations and series queries.
-- `internal/esi`: ESI client (ETag cache, wallets, journals).
+- `cmd/eve-wallets`: CLI (`serve`, `collect`, `backfill`, `wallets`, `label`) and wiring.
+- `internal/store`: SQLite (pure Go, `modernc.org/sqlite`) schema, migrations, wallet names and series queries.
+- `internal/esi`: ESI client (ETag cache, wallets, journals, division names).
 - `internal/auth`: token source that shells out to `eve-auth`.
 - `internal/collector`: snapshot and backfill logic, graceful skips.
 - `internal/scheduler`: background collection loop.
