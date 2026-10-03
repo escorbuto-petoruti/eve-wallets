@@ -60,7 +60,7 @@ The page shows a balance history chart with one line per selected wallet, an opt
 - Snapshots exist only while `serve` (or a manual or cron `collect`) runs. While it is off there are gaps.
 - Backfill covers only the last 30 days (the ESI journal window), and only journal entries that carry a balance.
 - ESI caching: wallet balance 2 min for characters and 5 min for corporations; journal 1 h. Rate limits: 150 tokens per 15 min for character wallets and 300 for corporation wallets (read from the ESI OpenAPI spec). On a rate limit the run is reported as partial and retried later.
-- Money is stored as integer ISK cents, never floats.
+- Money is stored as integer ISK cents, never floats. ESI amounts have up to four decimals (for example `3123652530.8712`); they are parsed exactly from the response text and rounded to the nearest cent (half away from zero) when stored.
 
 ## Security notes
 

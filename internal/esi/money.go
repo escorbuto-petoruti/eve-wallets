@@ -7,14 +7,14 @@ import (
 )
 
 // ParseCents converts a decimal ISK amount written as plain text (for example
-// "123", "123.4", "-0.05") into integer cents without any floating point
-// arithmetic.
+// "123", "123.4", "-0.05", "3123652530.8712") into integer cents without any
+// floating point arithmetic.
 //
-// ESI emits plain decimal numbers with at most two significant decimals, so
-// exponent notation, a leading "+", and bare ".5" or "5." forms are rejected
-// rather than guessed at. Extra decimals are accepted only when they are
-// zeros ("10.0000"); anything that would lose precision is an error, as is a
-// value that does not fit in an int64.
+// ESI emits up to four decimals, so digits beyond the second are rounded to
+// the nearest cent, half away from zero ("0.005" is 1 cent, "-0.005" is -1,
+// "0.995" is 100). Exponent notation, a leading "+", and bare ".5" or "5."
+// forms are rejected rather than guessed at, as is a value that does not fit
+// in an int64 after rounding.
 func ParseCents(s string) (int64, error) {
 	orig := s
 	neg := strings.HasPrefix(s, "-")
@@ -25,10 +25,8 @@ func ParseCents(s string) (int64, error) {
 	if !isDigits(intPart) || (hasFrac && !isDigits(frac)) {
 		return 0, fmt.Errorf("esi: invalid ISK amount %q", orig)
 	}
+	roundUp := len(frac) > 2 && frac[2] >= '5'
 	if len(frac) > 2 {
-		if strings.Trim(frac[2:], "0") != "" {
-			return 0, fmt.Errorf("esi: ISK amount %q has sub-cent precision", orig)
-		}
 		frac = frac[:2]
 	}
 	frac += strings.Repeat("0", 2-len(frac))
@@ -41,6 +39,14 @@ func ParseCents(s string) (int64, error) {
 			return 0, fmt.Errorf("esi: ISK amount %q out of range", orig)
 		}
 		n = n*10 - digit
+	}
+	if roundUp {
+		// The accumulator holds minus the magnitude, so rounding the
+		// magnitude up (away from zero) is a decrement.
+		if n == math.MinInt64 {
+			return 0, fmt.Errorf("esi: ISK amount %q out of range", orig)
+		}
+		n--
 	}
 	if neg {
 		return n, nil

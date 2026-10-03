@@ -73,6 +73,31 @@ func TestCharacterWalletExactCents(t *testing.T) {
 	}
 }
 
+func TestFourDecimalAmountsAreRounded(t *testing.T) {
+	c := newTestClient(t, true, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/journal") {
+			_, _ = w.Write([]byte(`[{"id":1,"date":"2026-01-02T03:04:05Z","amount":-10.5049,"balance":3123652530.8712,"ref_type":"x","description":"d"}]`))
+			return
+		}
+		_, _ = w.Write([]byte("224551122.2701"))
+	})
+	bal, err := c.CharacterWallet(context.Background(), testToken, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bal != 22455112227 {
+		t.Fatalf("wallet cents = %d", bal)
+	}
+	entries, err := c.CharacterJournal(context.Background(), testToken, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].AmountCents != -1050 ||
+		entries[0].BalanceCents == nil || *entries[0].BalanceCents != 312365253087 {
+		t.Fatalf("entries = %+v", entries)
+	}
+}
+
 func TestCorporationWallets(t *testing.T) {
 	c := newTestClient(t, true, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/corporations/7/wallets" {
