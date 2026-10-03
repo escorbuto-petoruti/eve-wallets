@@ -255,14 +255,69 @@ func TestStoreTokensSaveFailureReturnsNoToken(t *testing.T) {
 			t.Fatalf("error leaks a token: %v", err)
 		}
 	}
-	// The access token must not have been cached either.
-	st.saveErr = nil
-	rf.set.RefreshToken = oldRefresh
-	if _, err := src.Token(context.Background(), 1); err != nil {
-		t.Fatal(err)
+}
+
+// failRotationSave rotates once while saving fails, then lets saving work again.
+func failRotationSave(t *testing.T, expiresIn time.Duration) (*StoreTokens, *fakeTokenStore, *fakeRefresher, *clock) {
+	t.Helper()
+	st := newFakeTokenStore(nil, aliceToken())
+	st.saveErr = errors.New("database is locked")
+	rf := &fakeRefresher{set: sso.TokenSet{AccessToken: accessTok, RefreshToken: newRefresh, ExpiresIn: expiresIn}}
+	src, clk := newSource(t, st, rf)
+	if tok, err := src.Token(context.Background(), 1); err == nil || tok != "" {
+		t.Fatalf("token = %q, err = %v; want an error and no token", tok, err)
 	}
-	if n := rf.calls.Load(); n != 2 {
-		t.Fatalf("refreshes = %d, want 2 (nothing cached after the failed save)", n)
+	return src, st, rf, clk
+}
+
+func TestStoreTokensFailedSaveIsRetriedWithTheRotatedToken(t *testing.T) {
+	src, st, rf, _ := failRotationSave(t, 20*time.Minute)
+	st.saveErr = nil
+	tok, err := src.Token(context.Background(), 1)
+	if err != nil || tok != accessTok {
+		t.Fatalf("token = %q, %v", tok, err)
+	}
+	if st.tokens[1].RefreshToken != newRefresh {
+		t.Fatalf("stored refresh token = %q, want the rotated one", st.tokens[1].RefreshToken)
+	}
+	if !reflect.DeepEqual(rf.seen, []string{oldRefresh}) {
+		t.Fatalf("refresh tokens used = %v; the dead one must not be used again", rf.seen)
+	}
+}
+
+func TestStoreTokensKeepsFailingWithoutBurningAnotherRotation(t *testing.T) {
+	src, st, rf, _ := failRotationSave(t, 20*time.Minute)
+	for i := 0; i < 2; i++ {
+		if tok, err := src.Token(context.Background(), 1); err == nil || tok != "" {
+			t.Fatalf("call %d: token = %q, err = %v", i, tok, err)
+		}
+	}
+	if n := rf.calls.Load(); n != 1 {
+		t.Fatalf("refreshes = %d, want 1", n)
+	}
+	if st.saves != 3 {
+		t.Fatalf("save attempts = %d, want 3 (one per call)", st.saves)
+	}
+	st.saveErr = nil // storage recovers: the pending token is still there
+	if tok, err := src.Token(context.Background(), 1); err != nil || tok != accessTok || st.tokens[1].RefreshToken != newRefresh {
+		t.Fatalf("token = %q, err = %v, stored = %q", tok, err, st.tokens[1].RefreshToken)
+	}
+}
+
+func TestStoreTokensRefreshesWithPendingTokenAfterFlush(t *testing.T) {
+	src, st, rf, clk := failRotationSave(t, time.Minute)
+	st.saveErr = nil
+	clk.Advance(time.Hour) // the held access token has expired
+	rf.set.RefreshToken = "refresh-3-secret"
+	tok, err := src.Token(context.Background(), 1)
+	if err != nil || tok != accessTok {
+		t.Fatalf("token = %q, %v", tok, err)
+	}
+	if !reflect.DeepEqual(rf.seen, []string{oldRefresh, newRefresh}) {
+		t.Fatalf("refresh tokens used = %v, want the pending one second", rf.seen)
+	}
+	if st.tokens[1].RefreshToken != "refresh-3-secret" {
+		t.Fatalf("stored = %q", st.tokens[1].RefreshToken)
 	}
 }
 

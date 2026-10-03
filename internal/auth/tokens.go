@@ -67,6 +67,9 @@ type charState struct {
 	mu      sync.Mutex
 	access  string
 	expires time.Time
+	// pending is a rotated token whose save failed; it is newer than the
+	// stored row, so it must be saved before any refresh.
+	pending *store.Token
 }
 
 // NewStoreTokens returns a StoreTokens. A nil now means time.Now.
@@ -112,6 +115,15 @@ func (s *StoreTokens) Token(ctx context.Context, characterID int64) (string, err
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
+	// A rotated refresh token that could not be saved is flushed first. While
+	// storage keeps failing, neither the held access token is used nor another
+	// rotation is burned.
+	if cs.pending != nil {
+		if err := s.persist(ctx, *cs.pending, cs.access); err != nil {
+			return "", err
+		}
+		cs.pending = nil
+	}
 	if cs.access != "" && s.now().Before(cs.expires.Add(-expiryMargin)) {
 		return cs.access, nil
 	}
@@ -133,16 +145,26 @@ func (s *StoreTokens) Token(ctx context.Context, characterID int64) (string, err
 		next := tok
 		next.RefreshToken = ts.RefreshToken
 		next.UpdatedAt = s.now()
-		if err := s.store.SaveToken(ctx, next); err != nil {
-			// The new refresh token could not be kept, so the grant may be lost
-			// on the next restart: do not hand out the access token.
-			return "", fmt.Errorf("auth: persist rotated token for character %d: %s",
-				characterID, scrub(err.Error(), tok.RefreshToken, ts.RefreshToken, ts.AccessToken))
+		cs.access, cs.expires = ts.AccessToken, s.now().Add(ts.ExpiresIn)
+		if err := s.persist(ctx, next, tok.RefreshToken, ts.AccessToken); err != nil {
+			// SSO already invalidated the old refresh token: keep the rotated one
+			// (and the access token) in memory to retry the save on the next call,
+			// but do not hand out the access token before it is persisted.
+			cs.pending = &next
+			return "", err
 		}
 	}
-	cs.access = ts.AccessToken
-	cs.expires = s.now().Add(ts.ExpiresIn)
+	cs.access, cs.expires = ts.AccessToken, s.now().Add(ts.ExpiresIn)
 	return cs.access, nil
+}
+
+// persist saves t. A failure is scrubbed of t's refresh token and extra secrets.
+func (s *StoreTokens) persist(ctx context.Context, t store.Token, secrets ...string) error {
+	if err := s.store.SaveToken(ctx, t); err != nil {
+		return fmt.Errorf("auth: persist rotated token for character %d: %s",
+			t.CharacterID, scrub(err.Error(), append(secrets, t.RefreshToken)...))
+	}
+	return nil
 }
 
 // refreshError converts an SSO failure into an error without token material.
