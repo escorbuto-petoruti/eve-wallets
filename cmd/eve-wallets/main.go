@@ -42,7 +42,7 @@ const (
 const usage = `Usage:
   eve-wallets collect [--db PATH]
   eve-wallets backfill [--db PATH]
-  eve-wallets serve [--addr 127.0.0.1:8088] [--db PATH] [--every 30m] [--no-collect]
+  eve-wallets serve [--addr 127.0.0.1:8088] [--db PATH] [--every 30m] [--no-collect] [--no-backfill]
   eve-wallets wallets [--db PATH]
   eve-wallets label [--db PATH] <wallet-id> <name...>
   eve-wallets label [--db PATH] --clear <wallet-id>
@@ -50,7 +50,7 @@ const usage = `Usage:
 Commands:
   collect  take one snapshot of every wallet and print a summary
   backfill store the last 30 days of history from the wallet journals
-  serve    serve the charts on a loopback address and collect in the background
+  serve    serve the charts on a loopback address; each cycle takes a snapshot and backfills the journal
   wallets  list the wallets with id, owner, division and displayed name
   label    set (or --clear) the name shown for a wallet; flags go before the id
 
@@ -274,6 +274,7 @@ func runServe(ctx context.Context, args []string, d deps) int {
 	dbFlag := fset.String("db", "", "database path")
 	every := fset.Duration("every", defaultEvery, "collection interval (minimum 1m)")
 	noCollect := fset.Bool("no-collect", false, "serve without collecting in the background")
+	noBackfill := fset.Bool("no-backfill", false, "take snapshots only; do not backfill the journal each cycle")
 	if code, stop := parseFlags(fset, args); stop {
 		return code
 	}
@@ -313,7 +314,7 @@ func runServe(ctx context.Context, args []string, d deps) int {
 	if !*noCollect {
 		loop := &scheduler.Loop{
 			Every: *every,
-			Run:   buildCollector(d, st).Run,
+			Run:   newCycle(buildCollector(d, st), !*noBackfill),
 			OnResult: func(rep collector.Report, err error) {
 				snap := web.StatusFromReport(rep)
 				if err != nil && ctx.Err() == nil {

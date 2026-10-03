@@ -316,12 +316,13 @@ func TestSeriesValidation(t *testing.T) {
 
 func TestStatus(t *testing.T) {
 	rep := collector.Report{
-		TakenAt:     base,
-		Snapshots:   make([]collector.Snapshot, 3),
-		Skipped:     []collector.Skip{{Owner: "Alice", Reason: "missing corporation role"}},
-		Errors:      []collector.ItemError{{Owner: "Bob", Err: errBoom{}}},
-		RateLimited: true,
-		RetryAfter:  90 * time.Second,
+		TakenAt:       base,
+		Snapshots:     make([]collector.Snapshot, 3),
+		JournalPoints: 42,
+		Skipped:       []collector.Skip{{Owner: "Alice", Reason: "missing corporation role"}},
+		Errors:        []collector.ItemError{{Owner: "Bob", Err: errBoom{}}},
+		RateLimited:   true,
+		RetryAfter:    90 * time.Second,
 	}
 	f := newFixture(t, func() StatusSnapshot { return StatusFromReport(rep) }, false)
 	rec := do(f.h, http.MethodGet, "/api/status")
@@ -331,13 +332,14 @@ func TestStatus(t *testing.T) {
 	var got struct {
 		TakenAt           *int64 `json:"taken_at"`
 		Snapshots         int    `json:"snapshots"`
+		JournalPoints     int    `json:"journal_points"`
 		Skipped           []struct{ Owner, Reason string }
 		Errors            []string `json:"errors"`
 		RateLimited       bool     `json:"rate_limited"`
 		RetryAfterSeconds int      `json:"retry_after_seconds"`
 	}
 	decode(t, rec, &got)
-	if got.TakenAt == nil || *got.TakenAt != base.Unix() || got.Snapshots != 3 || !got.RateLimited ||
+	if got.TakenAt == nil || *got.TakenAt != base.Unix() || got.Snapshots != 3 || got.JournalPoints != 42 || !got.RateLimited ||
 		got.RetryAfterSeconds != 90 || len(got.Skipped) != 1 || got.Skipped[0].Reason != "missing corporation role" ||
 		len(got.Errors) != 1 || got.Errors[0] != "Bob: boom" {
 		t.Fatalf("unexpected status: %s", rec.Body)
@@ -355,7 +357,7 @@ func TestStatusWithoutProvider(t *testing.T) {
 		t.Fatalf("status = %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{`"taken_at":null`, `"skipped":[]`, `"errors":[]`, `"rate_limited":false`} {
+	for _, want := range []string{`"taken_at":null`, `"skipped":[]`, `"errors":[]`, `"rate_limited":false`, `"journal_points":0`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body %s missing %s", body, want)
 		}

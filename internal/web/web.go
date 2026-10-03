@@ -282,6 +282,7 @@ func (s *server) status(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"taken_at":            takenAt,
 		"snapshots":           st.Snapshots,
+		"journal_points":      st.JournalPoints,
 		"skipped":             skipped,
 		"errors":              errs,
 		"rate_limited":        st.RateLimited,
