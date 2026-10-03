@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,20 +20,76 @@ import (
 
 var base = time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 
+// fixture serves the app over a real SQLite file. f.h is the handler seen by a
+// browser signed in as Alice (user 1) when the request carries no cookie of
+// its own; f.anon is the bare handler.
 type fixture struct {
-	h              http.Handler
+	h, anon        http.Handler
 	st             *store.Store
+	dbPath         string
 	charID, corpID int64 // wallet ids
+	sso            *fakeSSO
+	now            atomic.Int64 // unix seconds
+	logins         []int64
+	aliceCookie    string
+	mu             sync.Mutex
+}
+
+func (f *fixture) clock() time.Time { return time.Unix(f.now.Load(), 0).UTC() }
+
+func (f *fixture) loggedIn() []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int64(nil), f.logins...)
+}
+
+// newSession stores a session of userID and returns the cookie value.
+func (f *fixture) newSession(t *testing.T, userID int64, ttl time.Duration) string {
+	t.Helper()
+	val := "session-value-" + strconv.FormatInt(userID, 10) + "-" + strconv.FormatInt(int64(ttl), 10)
+	if err := f.st.CreateSession(context.Background(), hashSession(val), userID, f.clock(), f.clock().Add(ttl)); err != nil {
+		t.Fatal(err)
+	}
+	return val
+}
+
+func (f *fixture) link(t *testing.T, userID, walletID int64) {
+	t.Helper()
+	if err := f.st.LinkWallet(context.Background(), userID, walletID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f *fixture) addUser(t *testing.T, id int64, name string) {
+	t.Helper()
+	if err := f.st.UpsertUser(context.Background(), id, name, f.clock()); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func newFixture(t *testing.T, status func() StatusSnapshot, seed bool) *fixture {
 	t.Helper()
-	st, err := store.Open(t.TempDir() + "/w.db")
+	path := t.TempDir() + "/w.db"
+	st, err := store.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	f := &fixture{st: st, h: New(Deps{Store: st, Status: status})}
+	f := &fixture{st: st, dbPath: path, sso: newFakeSSO()}
+	f.now.Store(base.Unix())
+	f.anon = New(Deps{Store: st, Status: status, SSO: f.sso, Now: f.clock, OnLogin: func(id int64) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.logins = append(f.logins, id)
+	}})
+	f.addUser(t, 1, "Alice")
+	f.aliceCookie = f.newSession(t, 1, 7*24*time.Hour)
+	f.h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := r.Cookie(sessionCookie); err != nil {
+			r.AddCookie(&http.Cookie{Name: sessionCookie, Value: f.aliceCookie})
+		}
+		f.anon.ServeHTTP(w, r)
+	})
 	if !seed {
 		return f
 	}
@@ -43,6 +101,11 @@ func newFixture(t *testing.T, status func() StatusSnapshot, seed bool) *fixture 
 	f.corpID, err = st.UpsertWallet(ctx, store.Wallet{Kind: store.KindCorporation, OwnerID: 9, OwnerName: "Corp", Division: 3})
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, id := range []int64{f.charID, f.corpID} {
+		if err := st.LinkWallet(ctx, 1, id); err != nil {
+			t.Fatal(err)
+		}
 	}
 	mustSnap := func(id int64, at time.Time, cents int64) {
 		t.Helper()
@@ -58,7 +121,9 @@ func newFixture(t *testing.T, status func() StatusSnapshot, seed bool) *fixture 
 
 func do(h http.Handler, method, target string) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(method, target, nil))
+	req := httptest.NewRequest(method, target, nil)
+	req.Host = "localhost"
+	h.ServeHTTP(rec, req)
 	return rec
 }
 
@@ -127,6 +192,7 @@ func TestWalletsExposeNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.link(t, 1, esiID)
 	if err := f.st.SetESIName(ctx, esiID, "Ops"); err != nil {
 		t.Fatal(err)
 	}
@@ -175,9 +241,11 @@ func TestWalletsDefaultDivisionName(t *testing.T) {
 
 func TestWalletsWithoutBalanceHaveNullCents(t *testing.T) {
 	f := newFixture(t, nil, false)
-	if _, err := f.st.UpsertWallet(context.Background(), store.Wallet{Kind: store.KindCharacter, OwnerID: 5, OwnerName: "Bob"}); err != nil {
+	id, err := f.st.UpsertWallet(context.Background(), store.Wallet{Kind: store.KindCharacter, OwnerID: 5, OwnerName: "Bob"})
+	if err != nil {
 		t.Fatal(err)
 	}
+	f.link(t, 1, id)
 	rec := do(f.h, http.MethodGet, "/api/wallets")
 	if !strings.Contains(rec.Body.String(), `"cents":null`) {
 		t.Fatalf("body = %s", rec.Body.String())

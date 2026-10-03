@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -65,6 +66,7 @@ type deps struct {
 	newTokens      func(st *store.Store) auth.TokenSource
 	newESI         func(userAgent string) collector.ESIClient
 	listen         func(network, addr string) (net.Listener, error)
+	newSSO         func() web.SSO
 }
 
 func main() {
@@ -79,6 +81,7 @@ func main() {
 			return esi.New(esi.Options{UserAgent: ua})
 		},
 		listen: net.Listen,
+		newSSO: func() web.SSO { return sso.NewClient(sso.DefaultConfig()) },
 	})
 	stop()
 	os.Exit(code)
@@ -310,6 +313,7 @@ func runServe(ctx context.Context, args []string, d deps) int {
 		mu     sync.Mutex
 		status web.StatusSnapshot
 	)
+	var onLogin func(int64) // stays nil with --no-collect
 	loopCtx, stopLoop := context.WithCancel(ctx)
 	defer stopLoop()
 	var loopDone sync.WaitGroup
@@ -328,6 +332,7 @@ func runServe(ctx context.Context, args []string, d deps) int {
 				mu.Unlock()
 			},
 		}
+		onLogin = func(int64) { loop.Trigger() } // do not wait for the next interval
 		loopDone.Add(1)
 		go func() {
 			defer loopDone.Done()
@@ -338,11 +343,17 @@ func runServe(ctx context.Context, args []string, d deps) int {
 	}
 
 	srv := &http.Server{
-		Handler: web.New(web.Deps{Store: st, Status: func() web.StatusSnapshot {
-			mu.Lock()
-			defer mu.Unlock()
-			return status
-		}}),
+		Handler: web.New(web.Deps{
+			Store: st,
+			Status: func() web.StatusSnapshot {
+				mu.Lock()
+				defer mu.Unlock()
+				return status
+			},
+			SSO:         d.newSSO(),
+			OnLogin:     onLogin,
+			AllowedPort: listenPort(ln.Addr().String()),
+		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -352,6 +363,9 @@ func runServe(ctx context.Context, args []string, d deps) int {
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(ln) }()
 	fmt.Fprintf(d.stdout, "Serving on http://%s (database %s)\n", ln.Addr(), path)
+	if w := ssoPortWarning(ln.Addr().String()); w != "" {
+		fmt.Fprintln(d.stderr, w)
+	}
 
 	code := 0
 	select {
@@ -432,4 +446,27 @@ func openSecureStore(path string) (*store.Store, error) {
 		}
 	}
 	return st, nil
+}
+
+// listenPort returns the port of a host:port address, or "" when it has none.
+func listenPort(addr string) string {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return ""
+	}
+	return port
+}
+
+// ssoPortWarning returns a one-line warning when the server listens on a port
+// other than the one in the fixed SSO redirect URL, or "" when they match.
+func ssoPortWarning(listenAddr string) string {
+	want := ""
+	if u, err := url.Parse(sso.DefaultRedirectURL); err == nil {
+		want = u.Port()
+	}
+	port := listenPort(listenAddr)
+	if port == want {
+		return ""
+	}
+	return fmt.Sprintf("eve-wallets: warning: listening on port %s but the SSO redirect URL is registered for port %s, so SSO login will not work here (use --addr 127.0.0.1:%s)", port, want, want)
 }

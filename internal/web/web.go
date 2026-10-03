@@ -29,33 +29,59 @@ type Deps struct {
 	Store *store.Store
 	// Status returns the last collection summary. It may be nil.
 	Status func() StatusSnapshot
+	// SSO signs users in. Without it /auth/login answers 503.
+	SSO SSO
+	// Now is the clock; it defaults to time.Now.
+	Now func() time.Time
+	// OnLogin runs after a successful sign-in with the user id. It may be nil.
+	OnLogin func(userID int64)
+	// AllowedPort is the port of the listener: a Host header may carry it (or no
+	// port) next to a loopback name. Any other port is refused.
+	AllowedPort string
 }
 
 type server struct {
-	deps Deps
+	deps  Deps
+	flows *loginFlows
 }
+
+func (s *server) now() time.Time { return s.deps.Now() }
 
 // New returns the handler for the local web app.
 func New(deps Deps) http.Handler {
+	if deps.Now == nil {
+		deps.Now = time.Now
+	}
 	s := &server{deps: deps}
+	s.flows = newLoginFlows(s.now)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/{$}", s.index)
 	mux.HandleFunc("/static/{name}", s.static)
-	mux.HandleFunc("/api/wallets", s.wallets)
-	mux.HandleFunc("/api/series", s.series)
-	mux.HandleFunc("/api/status", s.status)
-	return guard(mux)
+	mux.HandleFunc("GET /auth/login", s.login)
+	mux.HandleFunc("GET /auth/callback", s.callback)
+	mux.HandleFunc("POST /auth/logout", s.logout)
+	mux.HandleFunc("/api/me", requireUser(s.me))
+	mux.HandleFunc("/api/wallets", requireUser(s.wallets))
+	mux.HandleFunc("/api/series", requireUser(s.series))
+	mux.HandleFunc("/api/status", requireUser(s.status))
+	return s.guard(s.withSession(mux))
 }
 
-// guard sets the hardening headers on every response and allows only GET and
-// HEAD.
-func guard(next http.Handler) http.Handler {
+// guard sets the hardening headers on every response, refuses a Host that is not
+// the local app (DNS rebinding) and allows only GET and HEAD, except for
+// POST /auth/logout.
+func (s *server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("Content-Security-Policy", "default-src 'self'")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		if !allowedHost(r.Host, s.deps.AllowedPort) {
+			writeError(w, http.StatusForbidden, "forbidden host")
+			return
+		}
+		logout := r.Method == http.MethodPost && r.URL.Path == "/auth/logout"
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && !logout {
 			h.Set("Allow", "GET, HEAD")
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
@@ -111,14 +137,14 @@ type walletJSON struct {
 	BalanceTime *int64           `json:"balance_time"`
 }
 
-func (s *server) wallets(w http.ResponseWriter, r *http.Request) {
+func (s *server) wallets(w http.ResponseWriter, r *http.Request, u store.User) {
 	ctx := r.Context()
-	wallets, err := s.deps.Store.Wallets(ctx)
+	wallets, err := s.deps.Store.WalletsForUser(ctx, u.CharacterID)
 	if err != nil {
 		serverError(w, err)
 		return
 	}
-	latest, err := s.deps.Store.LatestBalances(ctx)
+	latest, err := s.deps.Store.LatestBalancesForUser(ctx, u.CharacterID)
 	if err != nil {
 		serverError(w, err)
 		return
@@ -145,7 +171,7 @@ type seriesJSON struct {
 	Points   []Point `json:"points"`
 }
 
-func (s *server) series(w http.ResponseWriter, r *http.Request) {
+func (s *server) series(w http.ResponseWriter, r *http.Request, u store.User) {
 	q := r.URL.Query()
 	ids, err := parseIDs(q.Get("wallet_ids"))
 	if err != nil {
@@ -184,7 +210,7 @@ func (s *server) series(w http.ResponseWriter, r *http.Request) {
 
 	out := map[string]any{"series": []seriesJSON{}}
 	if len(ids) > 0 || !q.Has("wallet_ids") {
-		pts, err := s.deps.Store.Series(r.Context(), store.SeriesFilter{WalletIDs: ids, From: from, To: to})
+		pts, err := s.deps.Store.SeriesForUser(r.Context(), u.CharacterID, store.SeriesFilter{WalletIDs: ids, From: from, To: to})
 		if err != nil {
 			serverError(w, err)
 			return
@@ -262,7 +288,7 @@ func parseTime(raw, name string) (time.Time, error) {
 	return t, nil
 }
 
-func (s *server) status(w http.ResponseWriter, r *http.Request) {
+func (s *server) status(w http.ResponseWriter, r *http.Request, _ store.User) {
 	var st StatusSnapshot
 	if s.deps.Status != nil {
 		st = s.deps.Status()

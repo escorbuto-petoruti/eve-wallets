@@ -20,6 +20,7 @@ import (
 	"github.com/escorbuto-petoruti/eve-wallets/internal/collector"
 	"github.com/escorbuto-petoruti/eve-wallets/internal/esi"
 	"github.com/escorbuto-petoruti/eve-wallets/internal/store"
+	"github.com/escorbuto-petoruti/eve-wallets/internal/web"
 )
 
 const charScope = "esi-wallet.read_character_wallet.v1"
@@ -132,6 +133,7 @@ func newHarness(t *testing.T, env map[string]string) *harness {
 			}
 			return fakeESI{}
 		},
+		newSSO: func() web.SSO { return fakeLoginSSO{} },
 		listen: func(network, addr string) (net.Listener, error) {
 			ln, err := net.Listen(network, addr)
 			if err == nil {
@@ -487,9 +489,9 @@ func startServe(t *testing.T, h *harness, extra ...string) (string, context.Canc
 	return "", nil, nil
 }
 
-func getJSON(t *testing.T, url string) map[string]any {
+func getJSON(t *testing.T, c *http.Client, url string) map[string]any {
 	t.Helper()
-	resp, err := http.Get(url)
+	resp, err := c.Get(url)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -516,9 +518,10 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 func TestServeCollectsAndShutsDownCleanly(t *testing.T) {
 	h := newHarness(t, map[string]string{"HOME": "/home/u"})
 	base, cancel, done := startServe(t, h)
+	c := signIn(t, base)
 
 	waitFor(t, "first collection in /api/status", func() bool {
-		return getJSON(t, base+"/api/status")["snapshots"] == float64(1)
+		return getJSON(t, c, base+"/api/status")["snapshots"] == float64(1)
 	})
 	resp, err := http.Get(base + "/")
 	if err != nil {
@@ -555,8 +558,9 @@ func TestServeCollectsAndShutsDownCleanly(t *testing.T) {
 func TestServeNoCollect(t *testing.T) {
 	h := newHarness(t, map[string]string{"HOME": "/home/u"})
 	base, cancel, done := startServe(t, h, "--no-collect")
+	c := signIn(t, base)
 	time.Sleep(50 * time.Millisecond)
-	if st := getJSON(t, base+"/api/status"); st["snapshots"] != float64(0) || st["taken_at"] != nil {
+	if st := getJSON(t, c, base+"/api/status"); st["snapshots"] != float64(0) || st["taken_at"] != nil {
 		t.Errorf("status = %v", st)
 	}
 	cancel()
@@ -572,8 +576,9 @@ func TestServeKeepsServingAfterFailedCollection(t *testing.T) {
 	h := newHarness(t, map[string]string{"HOME": "/home/u"})
 	h.tokens.listErr = errors.New("auth: list characters: boom")
 	base, cancel, done := startServe(t, h)
+	c := signIn(t, base)
 	waitFor(t, "failed run in /api/status", func() bool {
-		errs, _ := getJSON(t, base+"/api/status")["errors"].([]any)
+		errs, _ := getJSON(t, c, base+"/api/status")["errors"].([]any)
 		return len(errs) == 1 && strings.Contains(fmt.Sprint(errs[0]), "boom")
 	})
 	cancel()
@@ -605,10 +610,11 @@ func corpHarness(t *testing.T) *harness {
 func TestServeCycleBackfillsAndMergesStatus(t *testing.T) {
 	h := corpHarness(t)
 	base, cancel, done := startServe(t, h)
+	c := signIn(t, base)
 	waitFor(t, "merged cycle in /api/status", func() bool {
-		return getJSON(t, base+"/api/status")["journal_points"] == float64(1)
+		return getJSON(t, c, base+"/api/status")["journal_points"] == float64(1)
 	})
-	st := getJSON(t, base+"/api/status")
+	st := getJSON(t, c, base+"/api/status")
 	if st["snapshots"] != float64(2) {
 		t.Errorf("snapshots = %v, want 2", st["snapshots"])
 	}
@@ -625,10 +631,11 @@ func TestServeCycleBackfillsAndMergesStatus(t *testing.T) {
 func TestServeNoBackfill(t *testing.T) {
 	h := corpHarness(t)
 	base, cancel, done := startServe(t, h, "--no-backfill")
+	c := signIn(t, base)
 	waitFor(t, "snapshot in /api/status", func() bool {
-		return getJSON(t, base+"/api/status")["snapshots"] == float64(2)
+		return getJSON(t, c, base+"/api/status")["snapshots"] == float64(2)
 	})
-	st := getJSON(t, base+"/api/status")
+	st := getJSON(t, c, base+"/api/status")
 	if st["journal_points"] != float64(0) {
 		t.Errorf("journal_points = %v, want 0 with --no-backfill", st["journal_points"])
 	}
