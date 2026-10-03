@@ -480,7 +480,7 @@ func TestIndexAndStatic(t *testing.T) {
 			t.Errorf("%s empty body", tt.path)
 		}
 	}
-	if body := do(f.h, http.MethodGet, "/").Body.String(); !strings.Contains(body, "eve-wallets collect") {
+	if body := do(f.h, http.MethodGet, "/").Body.String(); !strings.Contains(body, "Collecting your wallets") {
 		t.Error("index lacks the empty-state hint")
 	}
 }
