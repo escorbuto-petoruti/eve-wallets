@@ -172,12 +172,22 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 	now := s.now()
 	// The refresh token is stored before the session exists: a session without
 	// a stored token would show an empty page that never fills.
-	if err := s.deps.Store.UpsertUser(ctx, claims.CharacterID, claims.CharacterName, now); err != nil {
+	// A character attached to another user signs in as that user: it gets no
+	// user row of its own, and the session belongs to the owner.
+	userID := claims.CharacterID
+	owner, attached, err := s.deps.Store.TokenOwner(ctx, claims.CharacterID)
+	if err != nil {
+		errorPage(w, http.StatusInternalServerError, "Could not save the sign-in.")
+		return
+	}
+	if attached && owner != claims.CharacterID {
+		userID = owner
+	} else if err := s.deps.Store.UpsertUser(ctx, claims.CharacterID, claims.CharacterName, now); err != nil {
 		errorPage(w, http.StatusInternalServerError, "Could not save the sign-in.")
 		return
 	}
 	err = s.deps.Store.SaveToken(ctx, store.Token{
-		CharacterID: claims.CharacterID, UserID: claims.CharacterID, CharacterName: claims.CharacterName,
+		CharacterID: claims.CharacterID, UserID: userID, CharacterName: claims.CharacterName,
 		RefreshToken: tokens.RefreshToken, Scopes: claims.Scopes, UpdatedAt: now,
 	})
 	if err != nil {
@@ -187,7 +197,7 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 	_, _ = s.deps.Store.PurgeExpiredSessions(ctx, now) // best effort housekeeping
 	value, err := randomValue()
 	if err == nil {
-		err = s.deps.Store.CreateSession(ctx, hashSession(value), claims.CharacterID, now, now.Add(sessionTTL))
+		err = s.deps.Store.CreateSession(ctx, hashSession(value), userID, now, now.Add(sessionTTL))
 	}
 	if err != nil {
 		errorPage(w, http.StatusInternalServerError, "Could not create the session.")
