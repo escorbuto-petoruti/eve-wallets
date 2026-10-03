@@ -3,7 +3,7 @@ package sso
 const (
 	// DefaultClientID is the embedded EVE application id. It belongs to a PKCE
 	// public client, so it is an identifier and not a secret.
-	DefaultClientID = "5ba0a63a6c8e4268bb1678ec0fca52a6"
+	DefaultClientID = "de451bb9d1d7458ab02c32c1f0998ee8"
 	// DefaultRedirectURL is the fixed callback registered for DefaultClientID.
 	DefaultRedirectURL = "http://localhost:8088/auth/callback"
 )

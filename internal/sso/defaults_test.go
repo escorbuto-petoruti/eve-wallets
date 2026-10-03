@@ -8,7 +8,7 @@ import (
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 
-	if cfg.ClientID != "5ba0a63a6c8e4268bb1678ec0fca52a6" {
+	if cfg.ClientID != "de451bb9d1d7458ab02c32c1f0998ee8" {
 		t.Errorf("ClientID = %q", cfg.ClientID)
 	}
 	if cfg.RedirectURL != "http://localhost:8088/auth/callback" {
