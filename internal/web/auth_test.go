@@ -839,21 +839,21 @@ func TestSecurityHeadersOnAuthResponses(t *testing.T) {
 func TestLoginFlowsAreSingleUseExpiringAndBounded(t *testing.T) {
 	now := base
 	flows := newLoginFlows(func() time.Time { return now })
-	flows.add("a", "verifier-a")
-	if v, ok := flows.take("a"); !ok || v != "verifier-a" {
-		t.Fatalf("take = %q %v", v, ok)
+	flows.add("a", "verifier-a", intentLogin, 0)
+	if v, ok := flows.take("a"); !ok || v.verifier != "verifier-a" {
+		t.Fatalf("take = %q %v", v.verifier, ok)
 	}
 	if _, ok := flows.take("a"); ok {
 		t.Error("state usable twice")
 	}
-	flows.add("old", "v")
+	flows.add("old", "v", intentLogin, 0)
 	now = now.Add(loginTTL)
 	if _, ok := flows.take("old"); ok {
 		t.Error("expired state accepted")
 	}
 	for i := 0; i < maxLoginFlows*3; i++ {
 		now = now.Add(time.Millisecond)
-		flows.add("s"+itoa(int64(i)), "v")
+		flows.add("s"+itoa(int64(i)), "v", intentLogin, 0)
 	}
 	if n := flows.size(); n > maxLoginFlows {
 		t.Errorf("flows = %d, want at most %d", n, maxLoginFlows)

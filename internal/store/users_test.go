@@ -530,25 +530,44 @@ func TestMoveTokenDeletesEmptiedPreviousUser(t *testing.T) {
 	}
 }
 
-func TestMoveTokenLeavesCorporationLinksAlone(t *testing.T) {
+func TestMoveTokenDropsThePreviousOwnersCorporationLinks(t *testing.T) {
 	ctx := context.Background()
 	s := openTemp(t)
-	seedMoveFixture(t, s)
-	corp, err := s.UpsertWallet(ctx, Wallet{Kind: KindCorporation, OwnerID: 50, OwnerName: "Acme", Division: 1})
-	if err != nil {
-		t.Fatal(err)
+	w := seedMoveFixture(t, s)
+	corp := func(owner int64, name string) int64 {
+		id, err := s.UpsertWallet(ctx, Wallet{Kind: KindCorporation, OwnerID: owner, OwnerName: name, Division: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
 	}
-	if err := s.LinkWallet(ctx, 1, corp); err != nil {
-		t.Fatal(err)
+	acme, other := corp(50, "Acme"), corp(51, "Other")
+	for _, l := range [][2]int64{{1, acme}, {1, other}, {2, other}} { // Bob already sees "Other" on his own
+		if err := s.LinkWallet(ctx, l[0], l[1]); err != nil {
+			t.Fatal(err)
+		}
 	}
+	wallets := count(t, s, `SELECT count(*) FROM wallets`)
+
 	if err := s.MoveToken(ctx, 3, 2); err != nil {
 		t.Fatal(err)
 	}
-	if n := count(t, s, `SELECT count(*) FROM user_wallets WHERE user_id = 1 AND wallet_id = ?`, corp); n != 1 {
-		t.Fatalf("previous user's corporation link = %d, want 1", n)
+	// The previous user keeps only its remaining character's personal wallet:
+	// corporation links come back on the next collection, if its characters can
+	// still read the corporation.
+	if got, want := walletIDsForUser(t, s, 1), sortedIDs(w[1]); !reflect.DeepEqual(got, want) {
+		t.Fatalf("previous user wallets = %v, want %v", got, want)
 	}
-	if n := count(t, s, `SELECT count(*) FROM user_wallets WHERE user_id = 2 AND wallet_id = ?`, corp); n != 0 {
-		t.Fatalf("new user's corporation link = %d, want 0", n)
+	// Another user's links stay and the move creates no corporation link for
+	// the new user; the wallets themselves are kept.
+	if got, want := walletIDsForUser(t, s, 2), sortedIDs(w[2], w[3], other); !reflect.DeepEqual(got, want) {
+		t.Fatalf("new user wallets = %v, want %v", got, want)
+	}
+	if n := count(t, s, `SELECT count(*) FROM user_wallets WHERE user_id = 2 AND wallet_id = ?`, acme); n != 0 {
+		t.Fatalf("new user's link to a corporation it never had = %d, want 0", n)
+	}
+	if n := count(t, s, `SELECT count(*) FROM wallets`); n != wallets {
+		t.Fatalf("wallets = %d, want %d", n, wallets)
 	}
 }
 
@@ -603,5 +622,49 @@ func TestMoveTokenFailuresChangeNothing(t *testing.T) {
 				t.Fatalf("owner of 3 = %d, ok %v, want 1", u, ok)
 			}
 		})
+	}
+}
+
+func TestSaveTokenIfOwner(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	seedMoveFixture(t, s) // character 3 belongs to user 1, character 2 to user 2
+
+	save := func(char, user int64, name, secret string) bool {
+		t.Helper()
+		applied, err := s.SaveTokenIfOwner(ctx, Token{
+			CharacterID: char, UserID: user, CharacterName: name, RefreshToken: secret,
+			Scopes: []string{"new.scope"}, UpdatedAt: t0,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return applied
+	}
+
+	if !save(9, 1, "Fresh", "fresh-secret") {
+		t.Error("a new character was not applied")
+	}
+	tok, ok, _ := s.GetToken(ctx, 9)
+	if !ok || tok.UserID != 1 || tok.RefreshToken != "fresh-secret" || tok.CharacterName != "Fresh" {
+		t.Errorf("new token = %+v ok=%v", tok, ok)
+	}
+
+	if !save(3, 1, "Renamed", "rotated") {
+		t.Error("the owner's own character was not applied")
+	}
+	tok, _, _ = s.GetToken(ctx, 3)
+	if tok.UserID != 1 || tok.RefreshToken != "rotated" || tok.CharacterName != "Renamed" ||
+		!reflect.DeepEqual(tok.Scopes, []string{"new.scope"}) {
+		t.Errorf("refreshed token = %+v", tok)
+	}
+
+	before, _, _ := s.GetToken(ctx, 2)
+	if save(2, 1, "Thief", "stolen") {
+		t.Error("another user's character was applied")
+	}
+	after, _, _ := s.GetToken(ctx, 2)
+	if !reflect.DeepEqual(before, after) {
+		t.Errorf("foreign token changed: %+v -> %+v", before, after)
 	}
 }

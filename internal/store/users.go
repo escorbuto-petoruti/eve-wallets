@@ -67,6 +67,34 @@ func (s *Store) SaveToken(ctx context.Context, t Token) error {
 	return nil
 }
 
+// SaveTokenIfOwner is SaveToken that never takes a character over: in one
+// statement it inserts the token, or updates it only when the stored row
+// already belongs to t.UserID. applied is false, with nothing written, when the
+// character is attached to another user. The user must exist.
+func (s *Store) SaveTokenIfOwner(ctx context.Context, t Token) (applied bool, err error) {
+	if t.UpdatedAt.IsZero() {
+		t.UpdatedAt = time.Now()
+	}
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO tokens (character_id, user_id, character_name, refresh_token, scopes, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT (character_id) DO UPDATE SET
+			character_name = excluded.character_name,
+			refresh_token = excluded.refresh_token,
+			scopes = excluded.scopes,
+			updated_at = excluded.updated_at
+		WHERE tokens.user_id = excluded.user_id`,
+		t.CharacterID, t.UserID, t.CharacterName, t.RefreshToken, strings.Join(t.Scopes, " "), t.UpdatedAt.Unix())
+	if err != nil {
+		return false, fmt.Errorf("store: save token for character %d: %w", t.CharacterID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: save token for character %d: %w", t.CharacterID, err)
+	}
+	return n > 0, nil
+}
+
 const tokenColumns = `character_id, user_id, character_name, refresh_token, scopes, updated_at`
 
 func scanToken(sc interface{ Scan(...any) error }) (Token, error) {
@@ -165,7 +193,11 @@ func (s *Store) CharactersForUser(ctx context.Context, userID int64) ([]UserChar
 // keeping the refresh token and scopes. The previous user loses the link to
 // the character's personal wallet and toUser gains it; if the previous user is
 // left with no token its row is deleted (sessions and links cascade, wallets
-// stay). Corporation wallet links are not touched. A missing token or target
+// stay). All corporation wallet links of the previous user are dropped too: the
+// store cannot tell which corporation the character gave access to, so the next
+// collection restores the links of every user whose characters can still read
+// the corporation. The new user's corporation links also come from collection.
+// A missing token or target
 // user wraps ErrNotFound; moving to the current owner is a no-op.
 func (s *Store) MoveToken(ctx context.Context, characterID, toUser int64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -195,12 +227,14 @@ func (s *Store) MoveToken(ctx context.Context, characterID, toUser int64) error 
 	}
 
 	const personal = `SELECT id FROM wallets WHERE kind = 'character' AND owner_id = ?`
+	const corporations = `SELECT id FROM wallets WHERE kind = 'corporation'`
 	steps := []struct {
 		query string
 		args  []any
 	}{
 		{`UPDATE tokens SET user_id = ? WHERE character_id = ?`, []any{toUser, characterID}},
 		{`DELETE FROM user_wallets WHERE user_id = ? AND wallet_id IN (` + personal + `)`, []any{from, characterID}},
+		{`DELETE FROM user_wallets WHERE user_id = ? AND wallet_id IN (` + corporations + `)`, []any{from}},
 		{`INSERT OR IGNORE INTO user_wallets (user_id, wallet_id) ` +
 			`SELECT ?, id FROM wallets WHERE kind = 'character' AND owner_id = ?`, []any{toUser, characterID}},
 		{`DELETE FROM users WHERE character_id = ? AND NOT EXISTS (SELECT 1 FROM tokens WHERE user_id = ?)`, []any{from, from}},
