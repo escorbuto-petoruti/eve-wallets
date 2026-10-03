@@ -1,6 +1,8 @@
 package web
 
 import (
+	"bytes"
+	"html/template"
 	"net/http"
 	"sync"
 	"time"
@@ -184,6 +186,106 @@ func (s *server) finishAdd(w http.ResponseWriter, r *http.Request, flow loginFlo
 	if s.deps.OnLogin != nil {
 		s.deps.OnLogin(claims.CharacterID)
 	}
+	w.Header().Set("Cache-Control", "no-store")
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+const expiredMovePage = "This confirmation expired. Add the character again."
+
+var confirmMoveTemplate = template.Must(template.New("confirm-move").Parse(`<!doctype html><meta charset="utf-8"><title>eve-wallets</title>
+<body style="font-family:sans-serif;max-width:32rem;margin:3rem auto">
+<h1>Move {{.Name}} to your account?</h1>
+<p>{{.Name}} belongs to another user. Moving it removes it from that account; that account's other characters are not affected.</p>
+<form method="post" action="/auth/move-character"><button type="submit">Move</button></form>
+<form method="post" action="/auth/cancel-move"><button type="submit">Cancel</button></form>
+`))
+
+// moveCookieValue is the id of the pending move the browser holds, or "".
+func moveCookieValue(r *http.Request) string {
+	if c, err := r.Cookie(moveCookie); err == nil {
+		return c.Value
+	}
+	return ""
+}
+
+// confirmMove asks the signed-in user to confirm taking over a character that
+// belongs to another user. The page never says who that user is.
+func (s *server) confirmMove(w http.ResponseWriter, r *http.Request) {
+	u, ok := sessionUser(r)
+	if !ok {
+		errorPage(w, http.StatusUnauthorized, "Sign in first.")
+		return
+	}
+	pm, ok := s.moves.peek(moveCookieValue(r), u.UserID)
+	if !ok {
+		errorPage(w, http.StatusBadRequest, expiredMovePage)
+		return
+	}
+	var page bytes.Buffer
+	if err := confirmMoveTemplate.Execute(&page, struct{ Name string }{pm.name}); err != nil {
+		errorPage(w, http.StatusInternalServerError, "Could not show the confirmation.")
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(page.Bytes())
+}
+
+// takeMove authorizes a confirmation POST and consumes the pending move before
+// anything is written. It answers the error page itself when it refuses.
+func (s *server) takeMove(w http.ResponseWriter, r *http.Request) (store.User, pendingMove, bool) {
+	if !s.sameOrigin(r) {
+		errorPage(w, http.StatusForbidden, "Cross-site request refused.")
+		return store.User{}, pendingMove{}, false
+	}
+	u, ok := sessionUser(r)
+	if !ok {
+		errorPage(w, http.StatusUnauthorized, "Sign in first.")
+		return store.User{}, pendingMove{}, false
+	}
+	pm, ok := s.moves.take(moveCookieValue(r), u.UserID)
+	if !ok {
+		errorPage(w, http.StatusBadRequest, expiredMovePage)
+		return store.User{}, pendingMove{}, false
+	}
+	return u, pm, true
+}
+
+// moveCharacter re-parents the pending character to the session user and
+// stores the refresh token the SSO round trip just produced.
+func (s *server) moveCharacter(w http.ResponseWriter, r *http.Request) {
+	u, pm, ok := s.takeMove(w, r)
+	if !ok {
+		return
+	}
+	ctx := r.Context()
+	clearCookie(w, moveCookie, "/auth")
+	if err := s.deps.Store.MoveToken(ctx, pm.characterID, u.UserID); err != nil {
+		errorPage(w, http.StatusInternalServerError, "Could not move the character. Nothing was changed.")
+		return
+	}
+	err := s.deps.Store.SaveToken(ctx, store.Token{
+		CharacterID: pm.characterID, UserID: u.UserID, CharacterName: pm.name,
+		RefreshToken: pm.refreshToken, Scopes: pm.scopes, UpdatedAt: s.now(),
+	})
+	if err != nil {
+		errorPage(w, http.StatusInternalServerError,
+			"The character was moved, but its new sign-in could not be saved. The previous token is kept; add the character again.")
+		return
+	}
+	if s.deps.OnLogin != nil {
+		s.deps.OnLogin(pm.characterID)
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// cancelMove drops the pending move without writing anything.
+func (s *server) cancelMove(w http.ResponseWriter, r *http.Request) {
+	if _, _, ok := s.takeMove(w, r); !ok {
+		return
+	}
+	clearCookie(w, moveCookie, "/auth")
 	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }

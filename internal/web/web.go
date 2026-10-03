@@ -62,6 +62,9 @@ func New(deps Deps) http.Handler {
 	mux.HandleFunc("GET /auth/login", s.login)
 	mux.HandleFunc("GET /auth/callback", s.callback)
 	mux.HandleFunc("GET /auth/add-character", s.addCharacter)
+	mux.HandleFunc("GET /auth/confirm-move", s.confirmMove)
+	mux.HandleFunc("POST /auth/move-character", s.moveCharacter)
+	mux.HandleFunc("POST /auth/cancel-move", s.cancelMove)
 	mux.HandleFunc("POST /auth/logout", s.logout)
 	mux.HandleFunc("/api/me", requireUser(s.me))
 	mux.HandleFunc("/api/wallets", requireUser(s.wallets))
@@ -70,9 +73,16 @@ func New(deps Deps) http.Handler {
 	return s.guard(s.withSession(mux))
 }
 
+// postPaths are the only paths that accept a POST.
+var postPaths = map[string]bool{
+	"/auth/logout":         true,
+	"/auth/move-character": true,
+	"/auth/cancel-move":    true,
+}
+
 // guard sets the hardening headers on every response, refuses a Host that is not
-// the local app (DNS rebinding) and allows only GET and HEAD, except for
-// POST /auth/logout.
+// the local app (DNS rebinding) and allows only GET and HEAD, except for the
+// POSTs of /auth/logout, /auth/move-character and /auth/cancel-move.
 func (s *server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
@@ -83,8 +93,8 @@ func (s *server) guard(next http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, "forbidden host")
 			return
 		}
-		logout := r.Method == http.MethodPost && r.URL.Path == "/auth/logout"
-		if r.Method != http.MethodGet && r.Method != http.MethodHead && !logout {
+		post := r.Method == http.MethodPost && postPaths[r.URL.Path]
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && !post {
 			h.Set("Allow", "GET, HEAD")
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
