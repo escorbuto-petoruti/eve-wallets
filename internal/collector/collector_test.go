@@ -531,3 +531,57 @@ func TestListFailureIsFatal(t *testing.T) {
 		t.Fatal("want error")
 	}
 }
+
+// Every skip and item error must name the owner it belongs to, so the status
+// endpoint can scope the report to the signed-in user.
+func TestSkipsAndErrorsCarryOwnerIdentity(t *testing.T) {
+	a := &fakeAuth{chars: []auth.Character{
+		{ID: 1, Name: "Alice", Scopes: []string{charScope, corpScope}}, // corporation wallet forbidden
+		{ID: 2, Name: "Bob", Scopes: []string{charScope}},              // personal wallet fails, corporation scope missing
+		{ID: 3, Name: "Dan", Scopes: []string{charScope, corpScope}},   // corporation call fails
+	}}
+	e := &fakeESI{
+		wallets:   map[int64]int64{1: 100, 2: 200, 3: 300},
+		walletErr: map[int64]error{2: errors.New("wallet failed")},
+		corpOf:    map[int64]int64{1: 900, 3: 800},
+		corpErr: map[string]error{
+			"900/1": forbidden(),
+			"800/3": errors.New("ESI down"),
+		},
+	}
+	rep, err := newCollector(a, e, &fakeStore{}).Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Skipped) != 2 || len(rep.Errors) != 2 {
+		t.Fatalf("skipped=%+v errors=%+v", rep.Skipped, rep.Errors)
+	}
+	for _, k := range rep.Skipped {
+		switch k.Reason {
+		case ReasonMissingRole:
+			if k.OwnerKind != store.KindCorporation || k.OwnerID != 900 || k.Owner != "Corp 900" {
+				t.Errorf("corporation skip = %+v, want kind corporation, id 900", k)
+			}
+		case "missing scope " + corpScope:
+			if k.OwnerKind != store.KindCharacter || k.OwnerID != 2 || k.Owner != "Bob" {
+				t.Errorf("character skip = %+v, want kind character, id 2", k)
+			}
+		default:
+			t.Errorf("unexpected skip = %+v", k)
+		}
+	}
+	for _, ie := range rep.Errors {
+		switch ie.Owner {
+		case "Bob":
+			if ie.OwnerKind != store.KindCharacter || ie.OwnerID != 2 || ie.Error() != "Bob: wallet failed" {
+				t.Errorf("character error = %+v, want kind character, id 2", ie)
+			}
+		case "Corp 800":
+			if ie.OwnerKind != store.KindCorporation || ie.OwnerID != 800 || ie.Error() != "Corp 800: ESI down" {
+				t.Errorf("corporation error = %+v, want kind corporation, id 800", ie)
+			}
+		default:
+			t.Errorf("unexpected error = %+v", ie)
+		}
+	}
+}

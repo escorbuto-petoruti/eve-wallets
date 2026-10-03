@@ -139,12 +139,13 @@ type walletJSON struct {
 
 func (s *server) wallets(w http.ResponseWriter, r *http.Request, u store.User) {
 	ctx := r.Context()
-	wallets, err := s.deps.Store.WalletsForUser(ctx, u.CharacterID)
+	// The wallet links are keyed by the user id, not the character id.
+	wallets, err := s.deps.Store.WalletsForUser(ctx, u.UserID)
 	if err != nil {
 		serverError(w, err)
 		return
 	}
-	latest, err := s.deps.Store.LatestBalancesForUser(ctx, u.CharacterID)
+	latest, err := s.deps.Store.LatestBalancesForUser(ctx, u.UserID)
 	if err != nil {
 		serverError(w, err)
 		return
@@ -210,7 +211,8 @@ func (s *server) series(w http.ResponseWriter, r *http.Request, u store.User) {
 
 	out := map[string]any{"series": []seriesJSON{}}
 	if len(ids) > 0 || !q.Has("wallet_ids") {
-		pts, err := s.deps.Store.SeriesForUser(r.Context(), u.CharacterID, store.SeriesFilter{WalletIDs: ids, From: from, To: to})
+		// The wallet links are keyed by the user id, not the character id.
+		pts, err := s.deps.Store.SeriesForUser(r.Context(), u.UserID, store.SeriesFilter{WalletIDs: ids, From: from, To: to})
 		if err != nil {
 			serverError(w, err)
 			return
@@ -288,18 +290,54 @@ func parseTime(raw, name string) (time.Time, error) {
 	return t, nil
 }
 
-func (s *server) status(w http.ResponseWriter, r *http.Request, _ store.User) {
+// status scopes the last collection to the signed-in user. A skip or an
+// attributed error is shown only when the user can see its owner: their own
+// character, or a corporation of their linked wallets. An error without an
+// owner identity is a run-level error (the collector process, not a user) and
+// is shown to every signed-in user; a skip without one is never shown (a skip
+// always belongs to someone, a missing identity is a bug). The counters stay
+// global: they describe the process cycle.
+func (s *server) status(w http.ResponseWriter, r *http.Request, u store.User) {
 	var st StatusSnapshot
 	if s.deps.Status != nil {
 		st = s.deps.Status()
 	}
-	skipped := st.Skipped
-	if skipped == nil {
-		skipped = []SkippedItem{}
+	// The wallet links are keyed by the user id (sessions.user_id), not the
+	// character id: scope by u.UserID. A character skip belongs to the
+	// signed-in character, and its OwnerID is that character's id, so it stays
+	// compared to u.CharacterID.
+	wallets, err := s.deps.Store.WalletsForUser(r.Context(), u.UserID)
+	if err != nil {
+		serverError(w, err)
+		return
 	}
-	errs := st.Errors
-	if errs == nil {
-		errs = []string{}
+	corps := make(map[int64]bool, len(wallets))
+	for _, wl := range wallets {
+		if wl.Kind == store.KindCorporation {
+			corps[wl.OwnerID] = true
+		}
+	}
+	canSee := func(kind store.Kind, ownerID int64) bool {
+		switch kind {
+		case store.KindCharacter:
+			return ownerID == u.CharacterID // a character skip carries a character id
+		case store.KindCorporation:
+			return corps[ownerID]
+		default:
+			return false
+		}
+	}
+	skipped := []SkippedItem{}
+	for _, it := range st.Skipped {
+		if canSee(it.OwnerKind, it.OwnerID) {
+			skipped = append(skipped, it)
+		}
+	}
+	errs := []string{}
+	for _, it := range st.Errors {
+		if it.OwnerKind == "" || canSee(it.OwnerKind, it.OwnerID) {
+			errs = append(errs, it.Message)
+		}
 	}
 	var takenAt *int64
 	if st.TakenAt != 0 {

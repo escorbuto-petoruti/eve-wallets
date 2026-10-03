@@ -107,7 +107,7 @@ func newHarness(t *testing.T, env map[string]string) *harness {
 	h := &harness{
 		out:       &syncBuffer{},
 		err:       &syncBuffer{},
-		tokens:    &fakeTokens{chars: []auth.Character{{ID: 1, Name: "Alice", Scopes: []string{charScope}}}},
+		tokens:    &fakeTokens{chars: []auth.Character{{ID: 1, Name: "Alice", Scopes: []string{charScope}, UserID: 1}}},
 		listeners: make(chan net.Listener, 1),
 	}
 	h.deps = deps{
@@ -117,6 +117,15 @@ func newHarness(t *testing.T, env map[string]string) *harness {
 		openStore: func(path string) (*store.Store, error) {
 			h.dbPath = path
 			st, err := store.Open(":memory:")
+			if err == nil {
+				// The fake character below has UserID 1, and LinkWallet enforces
+				// its user_id foreign key: create that user so the harness does
+				// not record a spurious link failure in every collection.
+				if uerr := st.UpsertUser(context.Background(), 1, "Alice", time.Unix(0, 0).UTC()); uerr != nil {
+					_ = st.Close()
+					return nil, uerr
+				}
+			}
 			h.opened = st
 			return st, err
 		},

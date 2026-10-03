@@ -9,10 +9,14 @@ import (
 	"time"
 )
 
-// User is an EVE character that signed in to the app. Its id is the
-// character id.
+// User is an EVE character that signed in to the app. UserID is the user id
+// that user_wallets.user_id, tokens.user_id and sessions.user_id reference;
+// today it equals CharacterID only because users.character_id is the primary
+// key those foreign keys point at. It must never be inferred from a character
+// id: carry it from the session row and use it to key the wallet links.
 type User struct {
 	CharacterID int64
+	UserID      int64
 	Name        string
 }
 
@@ -138,13 +142,15 @@ func (s *Store) CreateSession(ctx context.Context, idHash string, userID int64, 
 }
 
 // SessionUser returns the user of a session that has not expired at now
-// (a session is valid while now < expires_at).
+// (a session is valid while now < expires_at), with UserID taken from the
+// session row: it keys the wallet links and must not be inferred from the
+// character id.
 func (s *Store) SessionUser(ctx context.Context, idHash string, now time.Time) (User, bool, error) {
 	var u User
 	err := s.db.QueryRowContext(ctx, `
-		SELECT u.character_id, u.name
+		SELECT u.character_id, u.name, s.user_id
 		FROM sessions s JOIN users u ON u.character_id = s.user_id
-		WHERE s.id_hash = ? AND s.expires_at > ?`, idHash, now.Unix()).Scan(&u.CharacterID, &u.Name)
+		WHERE s.id_hash = ? AND s.expires_at > ?`, idHash, now.Unix()).Scan(&u.CharacterID, &u.Name, &u.UserID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, false, nil
 	}

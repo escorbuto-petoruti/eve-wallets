@@ -227,6 +227,36 @@ func TestSessions(t *testing.T) {
 	}
 }
 
+// The session user must carry the identifier the wallet links are keyed by
+// (sessions.user_id, which user_wallets.user_id references too), so callers
+// never have to infer a user id from a character id: today the two are equal
+// only because users.character_id is the primary key the FKs point at.
+func TestSessionUserCarriesUserID(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	if err := s.UpsertUser(ctx, 42, "Dana", t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSession(ctx, "dana", 42, t0, t0.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	w := charWallet(t, s, 42, "Dana")
+	if err := s.LinkWallet(ctx, 42, w); err != nil {
+		t.Fatal(err)
+	}
+	u, ok, err := s.SessionUser(ctx, "dana", t0)
+	if err != nil || !ok || u.CharacterID != 42 || u.Name != "Dana" {
+		t.Fatalf("SessionUser(dana) = %+v, ok %v, err %v", u, ok, err)
+	}
+	if u.UserID != 42 {
+		t.Fatalf("SessionUser(dana).UserID = %d, want 42 (sessions.user_id)", u.UserID)
+	}
+	ws, err := s.WalletsForUser(ctx, u.UserID)
+	if err != nil || len(ws) != 1 || ws[0].ID != w {
+		t.Fatalf("WalletsForUser(SessionUser.UserID) = %v, err %v, want the linked wallet", ws, err)
+	}
+}
+
 func TestLinkWalletIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	s := openTemp(t)

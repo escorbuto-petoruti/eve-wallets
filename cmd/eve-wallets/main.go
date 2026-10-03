@@ -324,7 +324,9 @@ func runServe(ctx context.Context, args []string, d deps) int {
 			OnResult: func(rep collector.Report, err error) {
 				snap := web.StatusFromReport(rep)
 				if err != nil && ctx.Err() == nil {
-					snap.Errors = append(snap.Errors, "collection failed: "+err.Error())
+					// No owner identity: the run itself failed, so every signed-in
+					// user sees the error.
+					snap.Errors = append(snap.Errors, web.ErrorItem{Message: "collection failed: " + err.Error()})
 					fmt.Fprintf(d.stderr, "eve-wallets: collection failed: %v\n", err)
 				}
 				mu.Lock()

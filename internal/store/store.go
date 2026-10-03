@@ -144,7 +144,10 @@ var migrations = []string{
 	// 3: users (EVE characters that signed in), their stored refresh tokens,
 	// which wallets each user may see, and login sessions. A token's user_id is
 	// separate from its character_id: today a user owns only their own
-	// character, later they may register more.
+	// character, later they may register more. The user id is the one key that
+	// tokens.user_id, user_wallets.user_id and sessions.user_id reference:
+	// today it is users.character_id, but never infer it from a character id —
+	// carry it from the session row (store.User.UserID).
 	`CREATE TABLE users (
 		character_id INTEGER PRIMARY KEY,
 		name         TEXT    NOT NULL,

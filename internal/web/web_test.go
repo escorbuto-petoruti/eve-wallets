@@ -387,10 +387,12 @@ func TestStatus(t *testing.T) {
 		TakenAt:       base,
 		Snapshots:     make([]collector.Snapshot, 3),
 		JournalPoints: 42,
-		Skipped:       []collector.Skip{{Owner: "Alice", Reason: "missing corporation role"}},
-		Errors:        []collector.ItemError{{Owner: "Bob", Err: errBoom{}}},
-		RateLimited:   true,
-		RetryAfter:    90 * time.Second,
+		// Attributed to the signed-in user's character: a skip without an
+		// owner identity is never shown to anyone.
+		Skipped:     []collector.Skip{{OwnerKind: store.KindCharacter, OwnerID: 1, Owner: "Alice", Reason: "missing corporation role"}},
+		Errors:      []collector.ItemError{{Owner: "Bob", Err: errBoom{}}}, // no identity: run-level, shown
+		RateLimited: true,
+		RetryAfter:  90 * time.Second,
 	}
 	f := newFixture(t, func() StatusSnapshot { return StatusFromReport(rep) }, false)
 	rec := do(f.h, http.MethodGet, "/api/status")
@@ -526,5 +528,133 @@ func TestAppJSNeverUsesInnerHTML(t *testing.T) {
 		if strings.Contains(string(b), bad) {
 			t.Errorf("app.js uses %s", bad)
 		}
+	}
+}
+
+// The status is scoped to the signed-in user: a skip or attributed error is
+// shown only when the user can see its owner; a skip without an identity is
+// never shown (it belongs to someone, a missing identity is a bug); an error
+// without an identity is a run-level error and is shown to every user. The
+// counters stay global: they describe the process cycle.
+func TestStatusScopesSkipsAndErrorsToUser(t *testing.T) {
+	rep := collector.Report{
+		TakenAt:       base,
+		Snapshots:     make([]collector.Snapshot, 2),
+		JournalPoints: 7,
+		Skipped: []collector.Skip{
+			{OwnerKind: store.KindCharacter, OwnerID: 1, Owner: "Alice", Reason: "missing scope esi-wallet.read_corporation_wallets.v1"},
+			{OwnerKind: store.KindCorporation, OwnerID: 20, Owner: "Cuervos Imperiales", Reason: "missing corporation role"},
+			{Owner: "Mystery", Reason: "missing corporation role"}, // no identity: a bug, never shown
+		},
+		Errors: []collector.ItemError{
+			{OwnerKind: store.KindCorporation, OwnerID: 20, Owner: "Cuervos Imperiales", Err: errBoom{}},
+		},
+	}
+	snap := StatusFromReport(rep)
+	snap.Errors = append(snap.Errors, ErrorItem{Message: "collection failed: boom"}) // run-level, no owner
+	f := newFixture(t, func() StatusSnapshot { return snap }, false)
+	f.addUser(t, 2, "Bob")
+	ctx := context.Background()
+	charID, err := f.st.UpsertWallet(ctx, store.Wallet{Kind: store.KindCharacter, OwnerID: 1, OwnerName: "Alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	corpID, err := f.st.UpsertWallet(ctx, store.Wallet{Kind: store.KindCorporation, OwnerID: 20, OwnerName: "Cuervos Imperiales", Division: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.link(t, 1, charID)
+	f.link(t, 2, corpID)
+
+	type item struct {
+		Owner  string
+		Reason string
+	}
+	var view func(rec *httptest.ResponseRecorder) (skipped []item, errs []string)
+	view = func(rec *httptest.ResponseRecorder) (skipped []item, errs []string) {
+		var got struct {
+			Skipped []item   `json:"skipped"`
+			Errors  []string `json:"errors"`
+		}
+		decode(t, rec, &got)
+		return got.Skipped, got.Errors
+	}
+
+	// Alice sees her own skip and the run-level error, and nothing of Bob's.
+	rec := do(f.h, http.MethodGet, "/api/status")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var counters struct {
+		TakenAt       *int64 `json:"taken_at"`
+		Snapshots     int    `json:"snapshots"`
+		JournalPoints int    `json:"journal_points"`
+	}
+	decode(t, rec, &counters)
+	if counters.TakenAt == nil || *counters.TakenAt != base.Unix() || counters.Snapshots != 2 || counters.JournalPoints != 7 {
+		t.Errorf("counters = %+v, want taken_at %d, 2 snapshots, 7 journal points", counters, base.Unix())
+	}
+	skipped, errs := view(rec)
+	if len(skipped) != 1 || skipped[0].Owner != "Alice" {
+		t.Errorf("skipped = %+v, want only Alice's own skip", skipped)
+	}
+	if len(errs) != 1 || errs[0] != "collection failed: boom" {
+		t.Errorf("errors = %q, want only the run-level error", errs)
+	}
+
+	// Bob sees his corporation's skip and error, and nothing of Alice's.
+	bob := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	bob.Host = "localhost"
+	bob.AddCookie(&http.Cookie{Name: sessionCookie, Value: f.newSession(t, 2, time.Hour)})
+	rec = httptest.NewRecorder()
+	f.anon.ServeHTTP(rec, bob)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	skipped, errs = view(rec)
+	if len(skipped) != 1 || skipped[0].Owner != "Cuervos Imperiales" {
+		t.Errorf("skipped = %+v, want only the Cuervos Imperiales skip", skipped)
+	}
+	if len(errs) != 2 || errs[0] != "Cuervos Imperiales: boom" || errs[1] != "collection failed: boom" {
+		t.Errorf("errors = %q, want the corp error and the run-level error", errs)
+	}
+}
+
+// The wallet links are keyed by the session user id, not the character id, so
+// the status must scope with store.User.UserID: today the two are equal only
+// because users.character_id is the primary key the FKs point at. A character
+// skip legitimately carries a character id, so it stays compared to
+// CharacterID (its owner is the signed-in character).
+func TestStatusScopesByUserIDNotCharacterID(t *testing.T) {
+	rep := collector.Report{
+		TakenAt: base,
+		Skipped: []collector.Skip{
+			{OwnerKind: store.KindCharacter, OwnerID: 1, Owner: "Alice", Reason: "missing scope esi-wallet.read_corporation_wallets.v1"},
+			{OwnerKind: store.KindCorporation, OwnerID: 9, Owner: "Acme", Reason: "missing corporation role"},
+		},
+	}
+	f := newFixture(t, func() StatusSnapshot { return StatusFromReport(rep) }, false)
+	// The signed-in user has internal id 7 but character id 1: only user 7
+	// has the wallet link that should make Acme's skip visible.
+	if err := f.st.UpsertUser(context.Background(), 7, "Dana", f.clock()); err != nil {
+		t.Fatal(err)
+	}
+	corpID, err := f.st.UpsertWallet(context.Background(), store.Wallet{Kind: store.KindCorporation, OwnerID: 9, OwnerName: "Acme", Division: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.link(t, 7, corpID)
+	s := &server{deps: Deps{Store: f.st, Status: func() StatusSnapshot { return StatusFromReport(rep) }, Now: f.clock}}
+	rec := httptest.NewRecorder()
+	s.status(rec, httptest.NewRequest(http.MethodGet, "/api/status", nil), store.User{UserID: 7, CharacterID: 1})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var got struct {
+		Skipped []struct{ Owner string } `json:"skipped"`
+	}
+	decode(t, rec, &got)
+	if len(got.Skipped) != 2 || got.Skipped[0].Owner != "Alice" || got.Skipped[1].Owner != "Acme" {
+		t.Errorf("skipped = %+v, want Alice (by character id) and Acme (by user id)", got.Skipped)
 	}
 }

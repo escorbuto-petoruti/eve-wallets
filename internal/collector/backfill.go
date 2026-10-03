@@ -61,7 +61,7 @@ func (c *Collector) Backfill(ctx context.Context) (BackfillReport, error) {
 	w.personal = func(ctx context.Context, ch auth.Character, token string) error {
 		entries, err := c.deps.ESI.CharacterJournal(ctx, token, ch.ID)
 		if err != nil {
-			return w.esiFailure(ctx, ch.Name, err)
+			return w.esiFailure(ctx, store.KindCharacter, ch.ID, ch.Name, err)
 		}
 		w.backfillWallet(ctx, &rep, store.Wallet{Kind: store.KindCharacter, OwnerID: ch.ID, OwnerName: ch.Name}, entries)
 		return nil
@@ -73,11 +73,11 @@ func (c *Collector) Backfill(ctx context.Context) (BackfillReport, error) {
 			}
 			entries, err := c.deps.ESI.CorporationJournal(ctx, token, corpID, d.Division)
 			if esi.IsForbidden(err) {
-				w.skip(fmt.Sprintf("%s (division %d)", name, d.Division), ReasonMissingRole)
+				w.skip(store.KindCorporation, corpID, fmt.Sprintf("%s (division %d)", name, d.Division), ReasonMissingRole)
 				continue
 			}
 			if err != nil {
-				if err := w.esiFailure(ctx, fmt.Sprintf("%s (division %d)", name, d.Division), err); err != nil {
+				if err := w.esiFailure(ctx, store.KindCorporation, corpID, fmt.Sprintf("%s (division %d)", name, d.Division), err); err != nil {
 					return err
 				}
 				continue
@@ -105,7 +105,7 @@ func (w *walker) backfillWallet(ctx context.Context, rep *BackfillReport, wl sto
 	}
 	id, err := w.c.deps.Store.UpsertWallet(ctx, wl)
 	if err != nil {
-		w.fail(label, err)
+		w.fail(wl.Kind, wl.OwnerID, label, err)
 		return
 	}
 	w.stored(ctx, wl, id, label)
@@ -116,7 +116,7 @@ func (w *walker) backfillWallet(ctx context.Context, rep *BackfillReport, wl sto
 			continue
 		}
 		if err := w.c.deps.Store.AddJournalBalance(ctx, id, e.ID, e.Date, *e.BalanceCents); err != nil {
-			w.fail(label, err)
+			w.fail(wl.Kind, wl.OwnerID, label, err)
 			break
 		}
 		out.Points++
