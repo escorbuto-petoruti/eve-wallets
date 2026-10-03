@@ -77,7 +77,7 @@ A label is never overwritten by a collection. Rename from the CLI; the page show
 
 A name is 1-64 characters without control characters. `--db` goes before the wallet id, and an unknown or invalid id exits with code 1.
 
-Optionally, `eve-wallets collect` can fetch the division names from ESI. It needs the scope `esi-corporations.read_divisions.v1` (add it to the `eve-auth login --scopes` list) and the in-game role Director. Without them the names are simply not fetched and `Division N` or your labels are shown. ESI only returns the divisions whose name is not the default, and the in-game default division names were not verified, so the fallback is `Division N`.
+Optionally, `eve-wallets collect` can fetch the division names from ESI. It needs the scope `esi-corporations.read_divisions.v1` (add it to the `eve-auth login --scopes` list) and the in-game role Director. Without the scope nothing is requested. With the scope but without the Director role, the collection reports `missing Director role` as a skipped item (not an error). In both cases `Division N` or your labels are shown. Note that your own labels win over ESI names, so run `eve-wallets label --clear <wallet-id>` to see the ESI name of a division you already renamed. ESI only returns the divisions whose name is not the default, and the in-game default division names were not verified, so the fallback is `Division N`.
 
 ## How history works, and its limits
 
@@ -119,3 +119,4 @@ Not covered:
 
 - `go test -race` has not been run (the development environment has no C compiler).
 - The JavaScript of the page has no automated tests.
+- The division names path was run against the real ESI only with a character that is not a Director, which ends in the `missing Director role` skip. The case where a Director receives the names (stored with source `esi`, and cleared for divisions that return to the default name) is covered by fakes only.
