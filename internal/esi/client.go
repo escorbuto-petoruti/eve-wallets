@@ -132,6 +132,37 @@ func (c *Client) CorporationWallets(ctx context.Context, token string, corporati
 	return out, nil
 }
 
+// DivisionNames maps a wallet division number to its custom in-game name.
+// Divisions that use the default name are absent.
+type DivisionNames map[int]string
+
+// CorporationDivisions returns the custom names of the corporation's wallet
+// divisions. The hangar names ESI also returns are parsed and ignored. It
+// needs the Director role; without it the error satisfies IsForbidden.
+func (c *Client) CorporationDivisions(ctx context.Context, token string, corporationID int64) (DivisionNames, error) {
+	body, _, err := c.get(ctx, token, fmt.Sprintf("/corporations/%d/divisions", corporationID), nil)
+	if err != nil {
+		return nil, err
+	}
+	var raw struct {
+		Hangar []json.RawMessage `json:"hangar"`
+		Wallet []struct {
+			Division int    `json:"division"`
+			Name     string `json:"name"`
+		} `json:"wallet"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("esi: decode corporation divisions: %w", err)
+	}
+	out := make(DivisionNames, len(raw.Wallet))
+	for _, d := range raw.Wallet {
+		if d.Name != "" {
+			out[d.Division] = d.Name
+		}
+	}
+	return out, nil
+}
+
 // CharacterJournal returns every journal entry of the character wallet,
 // fetching all pages.
 func (c *Client) CharacterJournal(ctx context.Context, token string, characterID int64) ([]JournalEntry, error) {

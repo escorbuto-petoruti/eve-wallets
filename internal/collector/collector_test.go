@@ -44,6 +44,8 @@ type fakeESI struct {
 	nameErr    error
 	corpWallet map[string][]esi.DivisionBalance // "corp/char" -> divisions
 	corpErr    map[string]error
+	divisions  map[string]esi.DivisionNames // "corp/char" -> custom wallet names
+	divErr     map[string]error
 	calls      []string
 	onCall     func(call string) // optional hook
 
@@ -92,6 +94,15 @@ func (f *fakeESI) CorporationWallets(_ context.Context, token string, corp int64
 	return f.corpWallet[key], nil
 }
 
+func (f *fakeESI) CorporationDivisions(_ context.Context, token string, corp int64) (esi.DivisionNames, error) {
+	key := fmt.Sprintf("%d/%s", corp, strings.TrimPrefix(token, "tok-"))
+	f.record("divisions/" + key)
+	if err := f.divErr[key]; err != nil {
+		return nil, err
+	}
+	return f.divisions[key], nil
+}
+
 func (f *fakeESI) CharacterJournal(_ context.Context, _ string, id int64) ([]esi.JournalEntry, error) {
 	key := fmt.Sprintf("char/%d", id)
 	f.record("journal/" + key)
@@ -119,6 +130,11 @@ type fakeStore struct {
 	// journal points keyed by wallet id and entry id, like the real store.
 	points     map[[2]int64]point
 	journalErr error
+
+	// esiNames holds the stored ESI name per wallet id; nameCalls counts writes.
+	esiNames  map[int64]string
+	nameCalls int
+	nameErr   error
 }
 
 type point struct {
@@ -137,6 +153,27 @@ func (s *fakeStore) AddJournalBalance(_ context.Context, id, entry int64, at tim
 	if _, ok := s.points[k]; !ok {
 		s.points[k] = point{at: at, cents: cents}
 	}
+	return nil
+}
+
+func (s *fakeStore) SetESIName(_ context.Context, id int64, name string) error {
+	s.nameCalls++
+	if s.nameErr != nil {
+		return s.nameErr
+	}
+	if s.esiNames == nil {
+		s.esiNames = make(map[int64]string)
+	}
+	s.esiNames[id] = name
+	return nil
+}
+
+func (s *fakeStore) ClearESIName(_ context.Context, id int64) error {
+	s.nameCalls++
+	if s.nameErr != nil {
+		return s.nameErr
+	}
+	delete(s.esiNames, id)
 	return nil
 }
 

@@ -60,6 +60,10 @@ func (fakeESI) CorporationWallets(context.Context, string, int64) ([]esi.Divisio
 	return nil, errors.New("unused")
 }
 
+func (fakeESI) CorporationDivisions(context.Context, string, int64) (esi.DivisionNames, error) {
+	return nil, errors.New("unused")
+}
+
 func (fakeESI) CharacterJournal(context.Context, string, int64) ([]esi.JournalEntry, error) {
 	bal := int64(5000)
 	at := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
