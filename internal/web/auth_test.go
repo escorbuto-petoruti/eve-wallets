@@ -341,6 +341,117 @@ func TestCallbackUpdatesAnExistingUser(t *testing.T) {
 	}
 }
 
+// attachCharacter makes character 42 ("Bob") a character of user 7 ("Owner").
+func attachCharacter(t *testing.T, f *fixture) {
+	t.Helper()
+	f.addUser(t, 7, "Owner")
+	err := f.st.SaveToken(context.Background(), store.Token{
+		CharacterID: 42, UserID: 7, CharacterName: "Old Bob", RefreshToken: "old-refresh", Scopes: []string{"old.scope"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCallbackAsAnAttachedCharacterSignsInAsItsOwner(t *testing.T) {
+	f := newFixture(t, nil, false)
+	attachCharacter(t, f)
+	ls := startLogin(t, f)
+	rec := callback(f, okQuery(ls.state), ls.cookie)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	ctx := context.Background()
+
+	sc := cookieNamed(rec, sessionCookie)
+	if sc == nil {
+		t.Fatal("no eve_session cookie")
+	}
+	u, ok, err := f.st.SessionUser(ctx, hashSession(sc.Value), f.clock())
+	if err != nil || !ok || u.UserID != 7 || u.Name != "Owner" {
+		t.Errorf("session user = %+v ok=%v err=%v, want the owner (user 7)", u, ok, err)
+	}
+
+	tok, ok, err := f.st.GetToken(ctx, 42)
+	if err != nil || !ok {
+		t.Fatalf("token: ok=%v err=%v", ok, err)
+	}
+	if tok.UserID != 7 || tok.RefreshToken != "refresh-tok-1" || tok.CharacterName != "Bob" ||
+		strings.Join(tok.Scopes, " ") != strings.Join(sso.WalletScopes(), " ") {
+		t.Errorf("stored token = %+v, want the owner kept and the new secrets saved", tok)
+	}
+
+	raw, err := sql.Open("sqlite", f.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	var n int
+	if err := raw.QueryRow(`SELECT COUNT(*) FROM users WHERE character_id = 42`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("users rows for the attached character = %d (err %v), want 0", n, err)
+	}
+
+	me := request(f.anon, http.MethodGet, "/api/me", func(r *http.Request) { r.AddCookie(sc) })
+	if me.Code != http.StatusOK || strings.TrimSpace(me.Body.String()) != `{"character_id":7,"name":"Owner"}` {
+		t.Errorf("/api/me = %d %s", me.Code, me.Body.String())
+	}
+}
+
+func TestFailedTokenSaveForAnAttachedCharacterCreatesNoSession(t *testing.T) {
+	f := newFixture(t, nil, false)
+	attachCharacter(t, f)
+	raw, err := sql.Open("sqlite", f.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`CREATE TRIGGER no_token_updates BEFORE UPDATE ON tokens BEGIN SELECT RAISE(ABORT, 'disk full'); END`); err != nil {
+		t.Fatal(err)
+	}
+	ls := startLogin(t, f)
+	rec := callback(f, okQuery(ls.state), ls.cookie)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body %q", rec.Code, rec.Body.String())
+	}
+	if c := cookieNamed(rec, sessionCookie); c != nil && c.Value != "" {
+		t.Errorf("session cookie issued: %+v", c)
+	}
+	var n int
+	if err := raw.QueryRow(`SELECT COUNT(*) FROM sessions WHERE user_id IN (7, 42)`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("sessions for the owner or the character = %d (err %v), want 0", n, err)
+	}
+	if len(f.loggedIn()) != 0 {
+		t.Error("OnLogin ran after a failed token save")
+	}
+}
+
+func TestFailedTokenOwnerLookupCreatesNoUserOrSession(t *testing.T) {
+	f := newFixture(t, nil, false)
+	raw, err := sql.Open("sqlite", f.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`ALTER TABLE tokens RENAME TO tokens_gone`); err != nil {
+		t.Fatal(err)
+	}
+	ls := startLogin(t, f)
+	rec := callback(f, okQuery(ls.state), ls.cookie)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body %q", rec.Code, rec.Body.String())
+	}
+	if c := cookieNamed(rec, sessionCookie); c != nil && c.Value != "" {
+		t.Errorf("session cookie issued: %+v", c)
+	}
+	var users, sessions int
+	if err := raw.QueryRow(`SELECT COUNT(*) FROM users WHERE character_id = 42`).Scan(&users); err != nil || users != 0 {
+		t.Errorf("users for the character = %d (err %v), want 0: a failed lookup must not fall back to creating one", users, err)
+	}
+	if err := raw.QueryRow(`SELECT COUNT(*) FROM sessions WHERE user_id = 42`).Scan(&sessions); err != nil || sessions != 0 {
+		t.Errorf("sessions for the character = %d (err %v), want 0", sessions, err)
+	}
+}
+
 func TestCallbackWithoutOnLoginHook(t *testing.T) {
 	f := newFixture(t, nil, false)
 	h := New(Deps{Store: f.st, SSO: f.sso, Now: f.clock}) // OnLogin nil
