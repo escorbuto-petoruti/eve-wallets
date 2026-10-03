@@ -315,3 +315,42 @@ func (f *failingLinkStore) LinkWallet(ctx context.Context, userID, walletID int6
 }
 
 var _ = store.KindCharacter
+
+// After a character moves to another user, MoveToken drops the previous owner's
+// corporation links. The collector restores them on the next Run only for the
+// users whose remaining characters can still read the corporation.
+func TestRunRestoresCorporationLinksOfARemainingCharacterThatCanReadIt(t *testing.T) {
+	a := &fakeAuth{chars: []auth.Character{{ID: 1, Name: "Alice", UserID: 10, Scopes: []string{charScope, corpScope}}}}
+	e := &fakeESI{
+		wallets:    map[int64]int64{1: 100},
+		corpOf:     map[int64]int64{1: 900},
+		corpNames:  map[int64]string{900: "Acme"},
+		corpWallet: map[string][]esi.DivisionBalance{"900/1": {{Division: 1, Cents: 5}}},
+	}
+	s := &fakeStore{}
+	if _, err := newCollector(a, e, s).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Wallet ids: 1 personal, 2 the corporation division.
+	if got, want := sortedLinks(s), [][2]int64{{10, 1}, {10, 2}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("links = %v, want %v", got, want)
+	}
+}
+
+func TestRunDoesNotRestoreCorporationLinksOfARemainingCharacterThatCannotReadIt(t *testing.T) {
+	a := &fakeAuth{chars: []auth.Character{{ID: 1, Name: "Alice", UserID: 10, Scopes: []string{charScope, corpScope}}}}
+	e := &fakeESI{
+		wallets:    map[int64]int64{1: 100},
+		corpOf:     map[int64]int64{1: 900},
+		corpNames:  map[int64]string{900: "Acme"},
+		corpWallet: map[string][]esi.DivisionBalance{"900/1": {{Division: 1, Cents: 5}}},
+		corpErr:    map[string]error{"900/1": forbidden()},
+	}
+	s := &fakeStore{}
+	if _, err := newCollector(a, e, s).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := sortedLinks(s), [][2]int64{{10, 1}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("links = %v, want %v (no corporation link without the role)", got, want)
+	}
+}

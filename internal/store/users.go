@@ -193,7 +193,11 @@ func (s *Store) CharactersForUser(ctx context.Context, userID int64) ([]UserChar
 // keeping the refresh token and scopes. The previous user loses the link to
 // the character's personal wallet and toUser gains it; if the previous user is
 // left with no token its row is deleted (sessions and links cascade, wallets
-// stay). Corporation wallet links are not touched. A missing token or target
+// stay). All corporation wallet links of the previous user are dropped too: the
+// store cannot tell which corporation the character gave access to, so the next
+// collection restores the links of every user whose characters can still read
+// the corporation. The new user's corporation links also come from collection.
+// A missing token or target
 // user wraps ErrNotFound; moving to the current owner is a no-op.
 func (s *Store) MoveToken(ctx context.Context, characterID, toUser int64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -223,12 +227,14 @@ func (s *Store) MoveToken(ctx context.Context, characterID, toUser int64) error 
 	}
 
 	const personal = `SELECT id FROM wallets WHERE kind = 'character' AND owner_id = ?`
+	const corporations = `SELECT id FROM wallets WHERE kind = 'corporation'`
 	steps := []struct {
 		query string
 		args  []any
 	}{
 		{`UPDATE tokens SET user_id = ? WHERE character_id = ?`, []any{toUser, characterID}},
 		{`DELETE FROM user_wallets WHERE user_id = ? AND wallet_id IN (` + personal + `)`, []any{from, characterID}},
+		{`DELETE FROM user_wallets WHERE user_id = ? AND wallet_id IN (` + corporations + `)`, []any{from}},
 		{`INSERT OR IGNORE INTO user_wallets (user_id, wallet_id) ` +
 			`SELECT ?, id FROM wallets WHERE kind = 'character' AND owner_id = ?`, []any{toUser, characterID}},
 		{`DELETE FROM users WHERE character_id = ? AND NOT EXISTS (SELECT 1 FROM tokens WHERE user_id = ?)`, []any{from, from}},

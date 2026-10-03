@@ -638,3 +638,28 @@ func TestAddCharacterLosingARaceEndsInAPendingMove(t *testing.T) {
 	}
 	assertUntouched(t, f)
 }
+
+func TestMoveCharacterDropsThePreviousUsersCorporationWallets(t *testing.T) {
+	f := newFixture(t, nil, false)
+	ctx := context.Background()
+	move := pendingFor(t, f) // character 42 moves from user 7 to Alice
+	corp, err := f.st.UpsertWallet(ctx, store.Wallet{Kind: store.KindCorporation, OwnerID: 50, OwnerName: "Acme", Division: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.SaveToken(ctx, store.Token{CharacterID: 43, UserID: 7, CharacterName: "Other", RefreshToken: "r43"}); err != nil {
+		t.Fatal(err)
+	}
+	f.link(t, 7, corp)
+	owner := f.newSession(t, 7, time.Hour)
+
+	if rec := moveRequest(f, http.MethodPost, "/auth/move-character", f.aliceCookie, move); rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	rec := request(f.anon, http.MethodGet, "/api/wallets", func(r *http.Request) {
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: owner})
+	})
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "Acme") {
+		t.Errorf("previous user /api/wallets = %d %s, want no corporation wallet", rec.Code, rec.Body.String())
+	}
+}

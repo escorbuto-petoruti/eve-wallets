@@ -530,25 +530,44 @@ func TestMoveTokenDeletesEmptiedPreviousUser(t *testing.T) {
 	}
 }
 
-func TestMoveTokenLeavesCorporationLinksAlone(t *testing.T) {
+func TestMoveTokenDropsThePreviousOwnersCorporationLinks(t *testing.T) {
 	ctx := context.Background()
 	s := openTemp(t)
-	seedMoveFixture(t, s)
-	corp, err := s.UpsertWallet(ctx, Wallet{Kind: KindCorporation, OwnerID: 50, OwnerName: "Acme", Division: 1})
-	if err != nil {
-		t.Fatal(err)
+	w := seedMoveFixture(t, s)
+	corp := func(owner int64, name string) int64 {
+		id, err := s.UpsertWallet(ctx, Wallet{Kind: KindCorporation, OwnerID: owner, OwnerName: name, Division: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
 	}
-	if err := s.LinkWallet(ctx, 1, corp); err != nil {
-		t.Fatal(err)
+	acme, other := corp(50, "Acme"), corp(51, "Other")
+	for _, l := range [][2]int64{{1, acme}, {1, other}, {2, other}} { // Bob already sees "Other" on his own
+		if err := s.LinkWallet(ctx, l[0], l[1]); err != nil {
+			t.Fatal(err)
+		}
 	}
+	wallets := count(t, s, `SELECT count(*) FROM wallets`)
+
 	if err := s.MoveToken(ctx, 3, 2); err != nil {
 		t.Fatal(err)
 	}
-	if n := count(t, s, `SELECT count(*) FROM user_wallets WHERE user_id = 1 AND wallet_id = ?`, corp); n != 1 {
-		t.Fatalf("previous user's corporation link = %d, want 1", n)
+	// The previous user keeps only its remaining character's personal wallet:
+	// corporation links come back on the next collection, if its characters can
+	// still read the corporation.
+	if got, want := walletIDsForUser(t, s, 1), sortedIDs(w[1]); !reflect.DeepEqual(got, want) {
+		t.Fatalf("previous user wallets = %v, want %v", got, want)
 	}
-	if n := count(t, s, `SELECT count(*) FROM user_wallets WHERE user_id = 2 AND wallet_id = ?`, corp); n != 0 {
-		t.Fatalf("new user's corporation link = %d, want 0", n)
+	// Another user's links stay and the move creates no corporation link for
+	// the new user; the wallets themselves are kept.
+	if got, want := walletIDsForUser(t, s, 2), sortedIDs(w[2], w[3], other); !reflect.DeepEqual(got, want) {
+		t.Fatalf("new user wallets = %v, want %v", got, want)
+	}
+	if n := count(t, s, `SELECT count(*) FROM user_wallets WHERE user_id = 2 AND wallet_id = ?`, acme); n != 0 {
+		t.Fatalf("new user's link to a corporation it never had = %d, want 0", n)
+	}
+	if n := count(t, s, `SELECT count(*) FROM wallets`); n != wallets {
+		t.Fatalf("wallets = %d, want %d", n, wallets)
 	}
 }
 
