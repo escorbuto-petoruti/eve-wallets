@@ -1,0 +1,6 @@
+# local data
+*.db
+*.db-wal
+*.db-shm
+.idea/
+.atl/
