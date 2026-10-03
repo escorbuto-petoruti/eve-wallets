@@ -29,7 +29,7 @@ func openStoreOnly(dbFlag *string, d deps) (*store.Store, int, bool) {
 }
 
 // runWallets lists the wallets with their displayed names. It needs neither
-// the network nor eve-auth.
+// the network nor a signed-in character.
 func runWallets(ctx context.Context, args []string, d deps) int {
 	fset := newFlagSet("wallets", d)
 	dbFlag := fset.String("db", "", "database path")

@@ -17,6 +17,9 @@ import (
 // reused.
 const expiryMargin = 60 * time.Second
 
+// maxErrDetail is the longest SSO error excerpt placed in an error message.
+const maxErrDetail = 200
+
 // ErrReauthRequired reports that EVE SSO rejected the stored grant (revoked or
 // expired): the person must sign in again. Use errors.Is; the concrete error is
 // a *ReauthError.

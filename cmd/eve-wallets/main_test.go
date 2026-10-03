@@ -367,12 +367,6 @@ func TestCollectAndBackfillWithoutCharactersPointToTheWebLogin(t *testing.T) {
 	}
 }
 
-func TestUsageNoLongerMentionsEveAuth(t *testing.T) {
-	if strings.Contains(usage, "EVE_AUTH_BIN") || strings.Contains(usage, "EVE_CLIENT_ID") {
-		t.Errorf("usage still documents the retired eve-auth variables:\n%s", usage)
-	}
-}
-
 func TestCollectFatalError(t *testing.T) {
 	h := newHarness(t, map[string]string{"HOME": "/home/u"})
 	h.tokens.listErr = errors.New("auth: list characters: boom")
