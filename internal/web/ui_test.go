@@ -118,3 +118,27 @@ func TestAppJSHandlesSession(t *testing.T) {
 		}
 	}
 }
+
+func TestIndexHasAddCharacterLinkAndCharactersList(t *testing.T) {
+	idx := asset(t, "index.html")
+	if !regexp.MustCompile(`<a[^>]*class="button"[^>]*href="/auth/add-character"|<a[^>]*href="/auth/add-character"[^>]*class="button"`).MatchString(idx) {
+		t.Error(`index.html lacks <a class="button" href="/auth/add-character">`)
+	}
+	if !strings.Contains(idx, "Add character") {
+		t.Error("index.html lacks the Add character copy")
+	}
+	bar := regexp.MustCompile(`(?s)<div id="user-bar".*?</form>`).FindString(idx)
+	if !strings.Contains(bar, `id="characters"`) || !strings.Contains(bar, "/auth/add-character") {
+		t.Errorf("#user-bar must hold the characters container and the add link: %s", bar)
+	}
+}
+
+func TestAppRendersCharactersFromMeWithoutInnerHTML(t *testing.T) {
+	js := asset(t, "app.js")
+	if !strings.Contains(js, "me.characters") || !strings.Contains(js, `$("characters")`) {
+		t.Error("app.js must read characters from /api/me into #characters")
+	}
+	if strings.Contains(js, "innerHTML") {
+		t.Error("app.js must never use innerHTML")
+	}
+}

@@ -68,6 +68,7 @@
     session.epoch++;
     $("signed-out").hidden = true;
     $("user-name").textContent = me.name;
+    $("characters").textContent = (me.characters || []).map(function (c) { return c.name; }).join(", ");
     $("user-bar").hidden = false;
     $("signed-in").hidden = false;
   }

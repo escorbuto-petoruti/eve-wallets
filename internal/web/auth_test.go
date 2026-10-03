@@ -322,7 +322,7 @@ func TestCallbackSuccess(t *testing.T) {
 	}
 
 	me := request(f.anon, http.MethodGet, "/api/me", func(r *http.Request) { r.AddCookie(sc) })
-	if me.Code != http.StatusOK || strings.TrimSpace(me.Body.String()) != `{"character_id":42,"name":"Bob"}` {
+	if me.Code != http.StatusOK || strings.TrimSpace(me.Body.String()) != `{"character_id":42,"name":"Bob","characters":[{"character_id":42,"name":"Bob"}]}` {
 		t.Errorf("/api/me = %d %s", me.Code, me.Body.String())
 	}
 }
@@ -336,7 +336,7 @@ func TestCallbackUpdatesAnExistingUser(t *testing.T) {
 		t.Fatalf("status = %d", rec.Code)
 	}
 	me := request(f.anon, http.MethodGet, "/api/me", func(r *http.Request) { r.AddCookie(cookieNamed(rec, sessionCookie)) })
-	if got := strings.TrimSpace(me.Body.String()); got != `{"character_id":42,"name":"Bob"}` {
+	if got := strings.TrimSpace(me.Body.String()); got != `{"character_id":42,"name":"Bob","characters":[{"character_id":42,"name":"Bob"}]}` {
 		t.Errorf("/api/me = %s, want the name refreshed from the claims", got)
 	}
 }
@@ -392,7 +392,7 @@ func TestCallbackAsAnAttachedCharacterSignsInAsItsOwner(t *testing.T) {
 	}
 
 	me := request(f.anon, http.MethodGet, "/api/me", func(r *http.Request) { r.AddCookie(sc) })
-	if me.Code != http.StatusOK || strings.TrimSpace(me.Body.String()) != `{"character_id":7,"name":"Owner"}` {
+	if me.Code != http.StatusOK || strings.TrimSpace(me.Body.String()) != `{"character_id":7,"name":"Owner","characters":[{"character_id":42,"name":"Bob"}]}` {
 		t.Errorf("/api/me = %d %s", me.Code, me.Body.String())
 	}
 }
@@ -891,5 +891,30 @@ func TestSameOriginFetchMetadata(t *testing.T) {
 		if got := s.sameOrigin(req); got != tc.want {
 			t.Errorf("sameOrigin(host %q, site %q, origin %q) = %v, want %v", tc.host, tc.site, tc.origin, got, tc.want)
 		}
+	}
+}
+
+// /api/me keeps its old fields and lists every character of the user, ordered
+// by character id; it never encodes null.
+func TestMeListsTheUsersCharacters(t *testing.T) {
+	f := newFixture(t, nil, false)
+	f.saveChar(t, 1, 30, "Zed <b>")
+	f.saveChar(t, 1, 1, "Alice")
+	f.addUser(t, 2, "Bob") // no characters: encoded as [], never null
+	f.addUser(t, 3, "Carol")
+	f.saveChar(t, 3, 99, "Stranger")
+	get := func(cookie string) *httptest.ResponseRecorder {
+		return request(f.anon, http.MethodGet, "/api/me", func(r *http.Request) {
+			r.AddCookie(&http.Cookie{Name: sessionCookie, Value: cookie})
+		})
+	}
+	rec := get(f.aliceCookie)
+	want := `{"character_id":1,"name":"Alice","characters":[{"character_id":1,"name":"Alice"},{"character_id":30,"name":"Zed \u003cb\u003e"}]}`
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != want {
+		t.Errorf("/api/me = %d %s, want %s", rec.Code, rec.Body.String(), want)
+	}
+	rec = get(f.newSession(t, 2, time.Hour))
+	if !strings.Contains(rec.Body.String(), `"characters":[]`) {
+		t.Errorf("/api/me = %s, want an empty list, not null", rec.Body.String())
 	}
 }
