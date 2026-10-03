@@ -205,7 +205,7 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) logout(w http.ResponseWriter, r *http.Request) {
-	if !sameOrigin(r) {
+	if !s.sameOrigin(r) {
 		errorPage(w, http.StatusForbidden, "Cross-site sign-out refused.")
 		return
 	}
@@ -225,9 +225,24 @@ func clearCookie(w http.ResponseWriter, name, path string) {
 	http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: path, MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 }
 
-// sameOrigin accepts a request whose Origin (or, without one, Referer) names
-// the host the request was sent to. A request with neither is refused.
-func sameOrigin(r *http.Request) bool {
+// sameOrigin accepts a request the browser itself marks as same-origin via
+// Fetch Metadata: Sec-Fetch-Site is set by the browser, not by page scripts,
+// so it wins over Origin. A proxy or privacy extension can serialize a
+// genuine same-origin navigation as "Origin: null" (the guard also sets
+// Referrer-Policy: no-referrer), which the Origin check alone would wrongly
+// refuse. When Sec-Fetch-Site is absent, fall back to Origin, then Referer:
+// it must parse as http/https and name the host the request was sent to.
+// A request with neither is refused. The Fetch Metadata branch re-checks the
+// allowed host so it cannot become a host bypass on its own.
+func (s *server) sameOrigin(r *http.Request) bool {
+	switch site := r.Header.Get("Sec-Fetch-Site"); site {
+	case "":
+		// Header absent: judge by the URL evidence below.
+	case "same-origin":
+		return allowedHost(r.Host, s.deps.AllowedPort)
+	default: // cross-site, same-site, none or anything else
+		return false
+	}
 	src := r.Header.Get("Origin")
 	if src == "" {
 		src = r.Header.Get("Referer")

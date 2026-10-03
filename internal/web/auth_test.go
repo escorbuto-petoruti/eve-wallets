@@ -601,6 +601,68 @@ func TestLogout(t *testing.T) {
 	})
 }
 
+func TestLogoutFetchMetadata(t *testing.T) {
+	post := func(f *fixture, mutate func(*http.Request)) *httptest.ResponseRecorder {
+		return request(f.anon, http.MethodPost, "/auth/logout", func(r *http.Request) {
+			r.AddCookie(&http.Cookie{Name: sessionCookie, Value: f.aliceCookie})
+			if mutate != nil {
+				mutate(r)
+			}
+		})
+	}
+	stillSignedIn := func(f *fixture) bool {
+		return request(f.anon, http.MethodGet, "/api/me", func(r *http.Request) {
+			r.AddCookie(&http.Cookie{Name: sessionCookie, Value: f.aliceCookie})
+		}).Code == http.StatusOK
+	}
+
+	t.Run("accepts null origin when fetch metadata says same-origin", func(t *testing.T) {
+		f := newFixture(t, nil, false)
+		rec := post(f, func(r *http.Request) {
+			r.Header.Set("Origin", "null")
+			r.Header.Set("Sec-Fetch-Site", "same-origin")
+			r.Header.Set("Sec-Fetch-Mode", "navigate")
+		})
+		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/" {
+			t.Fatalf("status = %d location = %q", rec.Code, rec.Header().Get("Location"))
+		}
+		assertSecurityHeaders(t, rec, "/auth/logout")
+		if c := cookieNamed(rec, sessionCookie); c == nil || c.MaxAge >= 0 || c.Value != "" || c.Path != "/" || !c.HttpOnly {
+			t.Errorf("session cookie not expired: %+v", c)
+		}
+		if stillSignedIn(f) {
+			t.Error("session survives logout")
+		}
+	})
+	t.Run("accepts a missing origin when fetch metadata says same-origin", func(t *testing.T) {
+		f := newFixture(t, nil, false)
+		rec := post(f, func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "same-origin") })
+		if rec.Code != http.StatusSeeOther || stillSignedIn(f) {
+			t.Errorf("status = %d, signed in = %v", rec.Code, stillSignedIn(f))
+		}
+	})
+	for name, site := range map[string]string{
+		"cross-site": "cross-site",
+		"none":       "none",
+		"same-site":  "same-site",
+	} {
+		t.Run("refuses "+name, func(t *testing.T) {
+			f := newFixture(t, nil, false)
+			rec := post(f, func(r *http.Request) {
+				r.Header.Set("Origin", "http://localhost") // matching origin does not help
+				r.Header.Set("Sec-Fetch-Site", site)
+			})
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("status = %d, want 403", rec.Code)
+			}
+			assertSecurityHeaders(t, rec, "/auth/logout")
+			if !stillSignedIn(f) {
+				t.Error("a rejected logout deleted the session")
+			}
+		})
+	}
+}
+
 func TestOtherPostsStayRejected(t *testing.T) {
 	f := newFixture(t, nil, true)
 	for _, target := range []string{"/auth/login", "/auth/callback", "/api/me", "/api/wallets", "/"} {
@@ -694,3 +756,29 @@ func TestLoginFlowsAreSingleUseExpiringAndBounded(t *testing.T) {
 }
 
 func itoa(v int64) string { return strconv.FormatInt(v, 10) }
+
+func TestSameOriginFetchMetadata(t *testing.T) {
+	s := &server{deps: Deps{AllowedPort: "8088"}}
+	for _, tc := range []struct {
+		host, site, origin string
+		want               bool
+	}{
+		{"localhost:8088", "same-origin", "", true},
+		{"evil.example:8088", "same-origin", "", false},
+		{"localhost:9999", "same-origin", "", false},
+		{"localhost:8088", "cross-site", "", false},
+		{"localhost:8088", "", "http://localhost:8088", true},
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+		req.Host = tc.host
+		if tc.site != "" {
+			req.Header.Set("Sec-Fetch-Site", tc.site)
+		}
+		if tc.origin != "" {
+			req.Header.Set("Origin", tc.origin)
+		}
+		if got := s.sameOrigin(req); got != tc.want {
+			t.Errorf("sameOrigin(host %q, site %q, origin %q) = %v, want %v", tc.host, tc.site, tc.origin, got, tc.want)
+		}
+	}
+}
