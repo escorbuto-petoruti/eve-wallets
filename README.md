@@ -7,7 +7,7 @@ ESI only returns the current balance and 30 days of wallet journal. To get a lon
 ## Requirements
 
 - Go (version in `go.mod`).
-- The [`eve-auth`](https://github.com/escorbuto-petoruti/eve-auth) CLI, on `PATH` or pointed to with `EVE_AUTH_BIN`. From a local clone of eve-auth:
+- The [`eve-auth`](https://github.com/escorbuto-petoruti/eve-auth) CLI (a version that includes the `eve-auth token` command), on `PATH` or pointed to with `EVE_AUTH_BIN`. From a local clone of eve-auth:
   ```bash
   go build -o ~/.local/bin/eve-auth ./cmd/eve-auth
   ```
@@ -53,6 +53,8 @@ Environment variables:
 
 Default database: `$XDG_DATA_HOME/eve-wallets/wallets.db`, else `~/.local/share/eve-wallets/wallets.db`. The directory is created with mode 0700 and the database files (including `-wal` and `-shm`) with 0600.
 
+Upgrading: the database schema is migrated automatically when the app opens it, and a binary older than the database refuses to open it. Stop the app and copy the database file before upgrading, so you can go back.
+
 The page shows a balance history chart with one line per selected wallet, an optional Total line, time ranges (24 h, 7 d, 30 d, All), a table of latest balances, and the result of the last collection. Without data it asks you to run `eve-wallets collect`.
 
 ## How history works, and its limits
@@ -89,4 +91,9 @@ gofmt -l .
 
 ## Status
 
-All unit and integration tests use fakes or a temporary SQLite database. The app has not been run against the real ESI or a real `eve-auth` session yet, and the chart UI has not been checked in a browser by a person.
+The tests use fakes or a temporary SQLite database (`CGO_ENABLED=0 go test ./...`). The app was also run against the real EVE ESI on 2026-10-03 from WSL2, with one character and one corporation: `backfill` (8 wallets and 7,740 journal points; a second run left the same rows, with no duplicates), `collect`, and `serve` (pages, API, security headers and loopback-only binding). That run found that ESI amounts have four decimals, which is why money is rounded to the nearest cent when stored.
+
+Not covered:
+
+- `go test -race` has not been run (the development environment has no C compiler).
+- The JavaScript of the page has no automated tests.
