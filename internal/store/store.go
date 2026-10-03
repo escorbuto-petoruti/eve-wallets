@@ -62,13 +62,17 @@ type Wallet struct {
 }
 
 // DisplayName returns the label if set, else the ESI name, else the default:
-// the owner name for a character wallet, "Division N" for a corporation one.
+// the owner name for a character wallet, "Master Wallet" for the first
+// division of a corporation (ESI reports no name for it) and "Division N" for
+// the others.
 func (w Wallet) DisplayName() string {
 	switch {
 	case w.Label != "":
 		return w.Label
 	case w.ESIName != "":
 		return w.ESIName
+	case w.Kind == KindCorporation && w.Division == 1:
+		return "Master Wallet"
 	case w.Kind == KindCorporation:
 		return fmt.Sprintf("Division %d", w.Division)
 	default:
