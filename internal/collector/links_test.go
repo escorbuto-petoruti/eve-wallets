@@ -97,6 +97,9 @@ func TestRunSecondUserWithoutRoleIsNotLinked(t *testing.T) {
 	for _, sk := range rep.Skipped {
 		if sk.Reason == ReasonMissingRole {
 			missing = true
+			if sk.UserID != 20 {
+				t.Errorf("skip user = %d, want 20 (Bob's character hit the 403)", sk.UserID)
+			}
 		}
 	}
 	if !missing || len(rep.Errors) != 0 {

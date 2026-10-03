@@ -21,13 +21,14 @@ type StatusSnapshot struct {
 }
 
 // SkippedItem is something the collector deliberately did not collect. The
-// owner identity (kind and id) is not serialized: the front end only ever saw
-// owner and reason.
+// owner identity (kind and id) and the user whose character produced the skip
+// are not serialized: the front end only ever saw owner and reason.
 type SkippedItem struct {
 	OwnerKind store.Kind `json:"-"`
 	OwnerID   int64      `json:"-"`
 	Owner     string     `json:"owner"`
 	Reason    string     `json:"reason"`
+	UserID    int64      `json:"-"`
 }
 
 // ErrorItem is one failure in the snapshot. An item error carries the identity
@@ -55,7 +56,7 @@ func StatusFromReport(r collector.Report) StatusSnapshot {
 		s.TakenAt = r.TakenAt.Unix()
 	}
 	for _, k := range r.Skipped {
-		s.Skipped = append(s.Skipped, SkippedItem{OwnerKind: k.OwnerKind, OwnerID: k.OwnerID, Owner: k.Owner, Reason: k.Reason})
+		s.Skipped = append(s.Skipped, SkippedItem{OwnerKind: k.OwnerKind, OwnerID: k.OwnerID, Owner: k.Owner, Reason: k.Reason, UserID: k.UserID})
 	}
 	for _, e := range r.Errors {
 		s.Errors = append(s.Errors, ErrorItem{OwnerKind: e.OwnerKind, OwnerID: e.OwnerID, Message: e.Error()})

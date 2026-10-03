@@ -389,7 +389,7 @@ func TestStatus(t *testing.T) {
 		JournalPoints: 42,
 		// Attributed to the signed-in user's character: a skip without an
 		// owner identity is never shown to anyone.
-		Skipped:     []collector.Skip{{OwnerKind: store.KindCharacter, OwnerID: 1, Owner: "Alice", Reason: "missing corporation role"}},
+		Skipped:     []collector.Skip{{OwnerKind: store.KindCharacter, OwnerID: 1, Owner: "Alice", Reason: "missing corporation role", UserID: 1}},
 		Errors:      []collector.ItemError{{Owner: "Bob", Err: errBoom{}}}, // no identity: run-level, shown
 		RateLimited: true,
 		RetryAfter:  90 * time.Second,
@@ -533,7 +533,9 @@ func TestAppJSNeverUsesInnerHTML(t *testing.T) {
 
 // The status is scoped to the signed-in user: a skip or attributed error is
 // shown only when the user can see its owner; a skip without an identity is
-// never shown (it belongs to someone, a missing identity is a bug); an error
+// never shown (it belongs to someone, a missing identity is a bug); a skip is
+// also shown only to the user whose character produced it, even on a
+// corporation another user can see; an error
 // without an identity is a run-level error and is shown to every user. The
 // counters stay global: they describe the process cycle.
 func TestStatusScopesSkipsAndErrorsToUser(t *testing.T) {
@@ -542,8 +544,10 @@ func TestStatusScopesSkipsAndErrorsToUser(t *testing.T) {
 		Snapshots:     make([]collector.Snapshot, 2),
 		JournalPoints: 7,
 		Skipped: []collector.Skip{
-			{OwnerKind: store.KindCharacter, OwnerID: 1, Owner: "Alice", Reason: "missing scope esi-wallet.read_corporation_wallets.v1"},
-			{OwnerKind: store.KindCorporation, OwnerID: 20, Owner: "Cuervos Imperiales", Reason: "missing corporation role"},
+			{OwnerKind: store.KindCharacter, OwnerID: 1, Owner: "Alice", Reason: "missing scope esi-wallet.read_corporation_wallets.v1", UserID: 1},
+			{OwnerKind: store.KindCorporation, OwnerID: 20, Owner: "Cuervos Imperiales", Reason: "missing corporation role", UserID: 2},
+			// Another user's character hit the 403 on a corporation Bob can see: not Bob's skip.
+			{OwnerKind: store.KindCorporation, OwnerID: 20, Owner: "Cuervos Imperiales", Reason: "missing corporation role (other user)", UserID: 1},
 			{Owner: "Mystery", Reason: "missing corporation role"}, // no identity: a bug, never shown
 		},
 		Errors: []collector.ItemError{
@@ -629,8 +633,8 @@ func TestStatusScopesByUserIDNotCharacterID(t *testing.T) {
 	rep := collector.Report{
 		TakenAt: base,
 		Skipped: []collector.Skip{
-			{OwnerKind: store.KindCharacter, OwnerID: 1, Owner: "Alice", Reason: "missing scope esi-wallet.read_corporation_wallets.v1"},
-			{OwnerKind: store.KindCorporation, OwnerID: 9, Owner: "Acme", Reason: "missing corporation role"},
+			{OwnerKind: store.KindCharacter, OwnerID: 1, Owner: "Alice", Reason: "missing scope esi-wallet.read_corporation_wallets.v1", UserID: 7},
+			{OwnerKind: store.KindCorporation, OwnerID: 9, Owner: "Acme", Reason: "missing corporation role", UserID: 7},
 		},
 	}
 	f := newFixture(t, func() StatusSnapshot { return StatusFromReport(rep) }, false)

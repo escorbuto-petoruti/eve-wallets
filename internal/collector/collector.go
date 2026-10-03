@@ -73,12 +73,14 @@ type Snapshot struct {
 
 // Skip records something that was deliberately not collected. OwnerKind and
 // OwnerID say whose item it is (character or corporation), so the status
-// endpoint can scope it to the users who can see that owner.
+// endpoint can scope it to the users who can see that owner. UserID is the
+// user whose character produced the skip (0 when the character has no user).
 type Skip struct {
 	OwnerKind store.Kind
 	OwnerID   int64
 	Owner     string
 	Reason    string
+	UserID    int64
 }
 
 // ItemError records a failure for one owner, or a run-level failure when it
@@ -474,7 +476,7 @@ func (w *walker) link(ctx context.Context, kind store.Kind, ownerID int64, label
 }
 
 func (w *walker) skip(kind store.Kind, ownerID int64, owner, reason string) {
-	w.skipped = append(w.skipped, Skip{OwnerKind: kind, OwnerID: ownerID, Owner: owner, Reason: reason})
+	w.skipped = append(w.skipped, Skip{OwnerKind: kind, OwnerID: ownerID, Owner: owner, Reason: reason, UserID: w.cur.UserID})
 }
 
 func (w *walker) fail(kind store.Kind, ownerID int64, owner string, err error) {

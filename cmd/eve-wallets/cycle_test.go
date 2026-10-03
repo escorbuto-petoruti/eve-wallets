@@ -211,3 +211,19 @@ func TestMergeBackfillKeepsOwnerIdentity(t *testing.T) {
 		t.Errorf("error = %+v, want the owner identity kept and the backfill prefix", e)
 	}
 }
+
+// The snapshot and the backfill both hit the same 403 for the same character,
+// so the merge must list that skip once, keeping the order of first appearance.
+func TestMergeBackfillDedupesSkips(t *testing.T) {
+	corp := collector.Skip{OwnerKind: store.KindCorporation, OwnerID: 900, Owner: "Acme", Reason: "missing corporation role", UserID: 10}
+	other := collector.Skip{OwnerKind: store.KindCorporation, OwnerID: 900, Owner: "Acme", Reason: "missing corporation role", UserID: 20}
+	char := collector.Skip{OwnerKind: store.KindCharacter, OwnerID: 1, Owner: "Alice", Reason: "missing scope", UserID: 10}
+	rep := mergeBackfill(
+		collector.Report{Skipped: []collector.Skip{corp, char}},
+		collector.BackfillReport{Skipped: []collector.Skip{corp, other, char}},
+		nil, true)
+	want := []collector.Skip{corp, char, other}
+	if !reflect.DeepEqual(rep.Skipped, want) {
+		t.Errorf("skipped = %+v, want %+v", rep.Skipped, want)
+	}
+}
