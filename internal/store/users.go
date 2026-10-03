@@ -120,6 +120,102 @@ func (s *Store) DeleteToken(ctx context.Context, characterID int64) error {
 	return nil
 }
 
+// UserCharacter is a character registered under a user. It deliberately has
+// no token fields: it is safe to hand to the web layer.
+type UserCharacter struct {
+	CharacterID int64
+	Name        string
+}
+
+// TokenOwner returns the user that owns the character's token; ok is false
+// when the character has no token.
+func (s *Store) TokenOwner(ctx context.Context, characterID int64) (userID int64, ok bool, err error) {
+	err = s.db.QueryRowContext(ctx,
+		`SELECT user_id FROM tokens WHERE character_id = ?`, characterID).Scan(&userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("store: token owner %d: %w", characterID, err)
+	}
+	return userID, true, nil
+}
+
+// CharactersForUser lists the characters whose token belongs to the user,
+// ordered by character id. Refresh tokens are never read.
+func (s *Store) CharactersForUser(ctx context.Context, userID int64) ([]UserCharacter, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT character_id, character_name FROM tokens WHERE user_id = ? ORDER BY character_id`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("store: characters for user %d: %w", userID, err)
+	}
+	defer rows.Close()
+	var out []UserCharacter
+	for rows.Next() {
+		var c UserCharacter
+		if err := rows.Scan(&c.CharacterID, &c.Name); err != nil {
+			return nil, fmt.Errorf("store: scan character: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// MoveToken re-parents a character's token to toUser in one transaction,
+// keeping the refresh token and scopes. The previous user loses the link to
+// the character's personal wallet and toUser gains it; if the previous user is
+// left with no token its row is deleted (sessions and links cascade, wallets
+// stay). Corporation wallet links are not touched. A missing token or target
+// user wraps ErrNotFound; moving to the current owner is a no-op.
+func (s *Store) MoveToken(ctx context.Context, characterID, toUser int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: begin move of character %d: %w", characterID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var from int64
+	err = tx.QueryRowContext(ctx, `SELECT user_id FROM tokens WHERE character_id = ?`, characterID).Scan(&from)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("store: move character %d: no token: %w", characterID, ErrNotFound)
+	}
+	if err != nil {
+		return fmt.Errorf("store: move character %d: %w", characterID, err)
+	}
+	var exists int
+	err = tx.QueryRowContext(ctx, `SELECT 1 FROM users WHERE character_id = ?`, toUser).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("store: move character %d: user %d: %w", characterID, toUser, ErrNotFound)
+	}
+	if err != nil {
+		return fmt.Errorf("store: move character %d: %w", characterID, err)
+	}
+	if from == toUser {
+		return nil
+	}
+
+	const personal = `SELECT id FROM wallets WHERE kind = 'character' AND owner_id = ?`
+	steps := []struct {
+		query string
+		args  []any
+	}{
+		{`UPDATE tokens SET user_id = ? WHERE character_id = ?`, []any{toUser, characterID}},
+		{`DELETE FROM user_wallets WHERE user_id = ? AND wallet_id IN (` + personal + `)`, []any{from, characterID}},
+		{`INSERT OR IGNORE INTO user_wallets (user_id, wallet_id) ` +
+			`SELECT ?, id FROM wallets WHERE kind = 'character' AND owner_id = ?`, []any{toUser, characterID}},
+		{`DELETE FROM users WHERE character_id = ? AND NOT EXISTS (SELECT 1 FROM tokens WHERE user_id = ?)`, []any{from, from}},
+	}
+	for _, st := range steps {
+		if _, err := tx.ExecContext(ctx, st.query, st.args...); err != nil {
+			return fmt.Errorf("store: move character %d: %w", characterID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit move of character %d: %w", characterID, err)
+	}
+	return nil
+}
+
 // LinkWallet lets a user see a wallet. Linking twice is a no-op.
 func (s *Store) LinkWallet(ctx context.Context, userID, walletID int64) error {
 	_, err := s.db.ExecContext(ctx,
