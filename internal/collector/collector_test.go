@@ -135,6 +135,10 @@ type fakeStore struct {
 	esiNames  map[int64]string
 	nameCalls int
 	nameErr   error
+
+	// linkCalls records every LinkWallet call as {user id, wallet id}.
+	linkCalls [][2]int64
+	linkErr   error
 }
 
 type point struct {
@@ -175,6 +179,11 @@ func (s *fakeStore) ClearESIName(_ context.Context, id int64) error {
 	}
 	delete(s.esiNames, id)
 	return nil
+}
+
+func (s *fakeStore) LinkWallet(_ context.Context, userID, walletID int64) error {
+	s.linkCalls = append(s.linkCalls, [2]int64{userID, walletID})
+	return s.linkErr
 }
 
 func (s *fakeStore) UpsertWallet(_ context.Context, w store.Wallet) (int64, error) {

@@ -108,6 +108,7 @@ func (w *walker) backfillWallet(ctx context.Context, rep *BackfillReport, wl sto
 		w.fail(label, err)
 		return
 	}
+	w.stored(ctx, wl, id, label)
 	out := BackfillWallet{Kind: wl.Kind, OwnerID: wl.OwnerID, OwnerName: wl.OwnerName, Division: wl.Division}
 	for _, e := range entries {
 		if e.BalanceCents == nil {

@@ -126,7 +126,7 @@ func TestWalletsEmptyDatabase(t *testing.T) {
 
 func TestWalletsNeedsNoAuthOrNetwork(t *testing.T) {
 	e := newNamesEnv(t)
-	e.deps.newTokens = func(string) auth.TokenSource { t.Error("wallets must not build a token source"); return nil }
+	e.deps.newTokens = func(*store.Store) auth.TokenSource { t.Error("wallets must not build a token source"); return nil }
 	e.deps.newESI = nil
 	if code := e.run("wallets"); code != 0 {
 		t.Fatalf("exit = %d", code)

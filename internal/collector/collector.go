@@ -48,6 +48,8 @@ type StoreWriter interface {
 	AddJournalBalance(ctx context.Context, walletID, entryID int64, at time.Time, cents int64) error
 	SetESIName(ctx context.Context, walletID int64, name string) error
 	ClearESIName(ctx context.Context, walletID int64) error
+	// LinkWallet lets a user see a wallet; linking twice is a no-op.
+	LinkWallet(ctx context.Context, userID, walletID int64) error
 }
 
 var _ ESIClient = (*esi.Client)(nil)
@@ -119,11 +121,16 @@ func New(deps Deps) *Collector {
 type walker struct {
 	c         *Collector
 	collected map[int64]bool // corporations already handled
-	named     map[int64]bool // corporations whose division names were fetched
-	skipped   []Skip
-	errors    []ItemError
-	limited   bool
-	retry     time.Duration
+	cur       auth.Character // the character being walked
+	// corpWallets are the stored wallet ids per corporation, so a later
+	// character of another user can be linked without a second ESI fetch.
+	corpWallets map[int64][]int64
+	linked      map[[2]int64]bool // {user id, wallet id} pairs already linked
+	named       map[int64]bool    // corporations whose division names were fetched
+	skipped     []Skip
+	errors      []ItemError
+	limited     bool
+	retry       time.Duration
 
 	// personal handles the personal wallet of ch.
 	personal func(ctx context.Context, ch auth.Character, token string) error
@@ -136,7 +143,13 @@ type walker struct {
 }
 
 func newWalker(c *Collector) *walker {
-	return &walker{c: c, collected: make(map[int64]bool), named: make(map[int64]bool)}
+	return &walker{
+		c:           c,
+		collected:   make(map[int64]bool),
+		named:       make(map[int64]bool),
+		corpWallets: make(map[int64][]int64),
+		linked:      make(map[[2]int64]bool),
+	}
 }
 
 // errStop is an internal signal that the run must end now.
@@ -221,6 +234,7 @@ func (c *Collector) Run(ctx context.Context) (Report, error) {
 // character handles the wallets of one character. It returns errStop after a
 // rate limit and a context error when the context ends.
 func (w *walker) character(ctx context.Context, ch auth.Character) error {
+	w.cur = ch
 	var token string
 	tokenFailed := false
 	getToken := func() (string, bool) {
@@ -269,6 +283,10 @@ func (w *walker) corp(ctx context.Context, ch auth.Character, getToken func() (s
 	fallback := fmt.Sprintf(corporationFallbackName, corpID)
 	if w.collected[corpID] {
 		w.skip(fallback, ReasonAlreadyCollected)
+		// The wallets are already stored, but this character's user must see them.
+		for _, id := range w.corpWallets[corpID] {
+			w.link(ctx, fallback, id)
+		}
 		// An earlier character may have lacked the scope or the Director role.
 		return w.corporationNames(ctx, ch, corpID, fallback, getToken)
 	}
@@ -364,10 +382,34 @@ func (w *walker) record(ctx context.Context, rep *Report, wl store.Wallet, cents
 		w.fail(wl.OwnerName, err)
 		return 0, false
 	}
+	w.stored(ctx, wl, id, wl.OwnerName)
 	rep.Snapshots = append(rep.Snapshots, Snapshot{
 		Kind: wl.Kind, OwnerID: wl.OwnerID, OwnerName: wl.OwnerName, Division: wl.Division, Cents: cents,
 	})
 	return id, true
+}
+
+// stored notes a wallet that now exists in the store: corporation wallets are
+// remembered for later characters, and the current character's user is linked.
+func (w *walker) stored(ctx context.Context, wl store.Wallet, id int64, label string) {
+	if wl.Kind == store.KindCorporation && !slices.Contains(w.corpWallets[wl.OwnerID], id) {
+		w.corpWallets[wl.OwnerID] = append(w.corpWallets[wl.OwnerID], id)
+	}
+	w.link(ctx, label, id)
+}
+
+// link makes the current character's user see the wallet. A character without
+// a user (UserID 0) links nothing. A failure is recorded like any store error.
+func (w *walker) link(ctx context.Context, label string, walletID int64) {
+	user := w.cur.UserID
+	if user == 0 || w.linked[[2]int64{user, walletID}] {
+		return
+	}
+	if err := w.c.deps.Store.LinkWallet(ctx, user, walletID); err != nil {
+		w.fail(label, err)
+		return
+	}
+	w.linked[[2]int64{user, walletID}] = true
 }
 
 func (w *walker) skip(owner, reason string) {

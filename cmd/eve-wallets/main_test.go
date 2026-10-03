@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -97,7 +96,8 @@ type harness struct {
 	tokens    *fakeTokens
 	dbPath    string
 	listeners chan net.Listener
-	openedBin string
+	opened    *store.Store        // the store openStore returned
+	tokensFor *store.Store        // the store newTokens was given
 	esi       collector.ESIClient // overrides fakeESI when set
 }
 
@@ -115,10 +115,12 @@ func newHarness(t *testing.T, env map[string]string) *harness {
 		getenv: func(k string) string { return env[k] },
 		openStore: func(path string) (*store.Store, error) {
 			h.dbPath = path
-			return store.Open(":memory:")
+			st, err := store.Open(":memory:")
+			h.opened = st
+			return st, err
 		},
-		newTokens: func(bin string) auth.TokenSource {
-			h.openedBin = bin
+		newTokens: func(st *store.Store) auth.TokenSource {
+			h.tokensFor = st
 			return h.tokens
 		},
 		newESI: func(ua string) collector.ESIClient {
@@ -287,7 +289,7 @@ func TestOpenSecureStorePermissions(t *testing.T) {
 }
 
 func TestCollectHappyPath(t *testing.T) {
-	h := newHarness(t, map[string]string{"EVE_AUTH_BIN": "/opt/eve-auth", "HOME": "/home/u"})
+	h := newHarness(t, map[string]string{"HOME": "/home/u"})
 	if got := run(context.Background(), []string{"collect"}, h.deps); got != 0 {
 		t.Fatalf("exit = %d; stderr = %q", got, h.err.String())
 	}
@@ -300,19 +302,72 @@ func TestCollectHappyPath(t *testing.T) {
 	if strings.Contains(out+h.err.String(), "secret-token") {
 		t.Error("token leaked into the output")
 	}
-	if h.openedBin != "/opt/eve-auth" {
-		t.Errorf("eve-auth bin = %q", h.openedBin)
-	}
 	if h.dbPath != "/home/u/.local/share/eve-wallets/wallets.db" {
 		t.Errorf("db path = %q", h.dbPath)
 	}
 }
 
-func TestCollectDefaultBinary(t *testing.T) {
+func TestCollectBuildsTokenSourceFromTheOpenedStore(t *testing.T) {
 	h := newHarness(t, map[string]string{"HOME": "/home/u"})
-	run(context.Background(), []string{"collect"}, h.deps)
-	if h.openedBin != "eve-auth" {
-		t.Errorf("bin = %q, want eve-auth", h.openedBin)
+	if got := run(context.Background(), []string{"collect"}, h.deps); got != 0 {
+		t.Fatalf("exit = %d; stderr = %q", got, h.err.String())
+	}
+	if h.opened == nil || h.tokensFor != h.opened {
+		t.Errorf("token source built from %p, opened store is %p", h.tokensFor, h.opened)
+	}
+}
+
+func TestBackfillBuildsTokenSourceFromTheOpenedStore(t *testing.T) {
+	h := newHarness(t, map[string]string{"HOME": "/home/u"})
+	if got := run(context.Background(), []string{"backfill"}, h.deps); got != 0 {
+		t.Fatalf("exit = %d; stderr = %q", got, h.err.String())
+	}
+	if h.opened == nil || h.tokensFor != h.opened {
+		t.Errorf("token source built from %p, opened store is %p", h.tokensFor, h.opened)
+	}
+}
+
+func TestServeBuildsTokenSourceFromTheOpenedStore(t *testing.T) {
+	h := newHarness(t, map[string]string{"HOME": "/home/u"})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() { done <- run(ctx, []string{"serve", "--addr", "127.0.0.1:0"}, h.deps) }()
+	ln := <-h.listeners
+	defer ln.Close()
+	for h.tokens.listCalls() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	if got := <-done; got != 0 {
+		t.Fatalf("exit = %d; stderr = %q", got, h.err.String())
+	}
+	if h.opened == nil || h.tokensFor != h.opened {
+		t.Errorf("token source built from %p, opened store is %p", h.tokensFor, h.opened)
+	}
+}
+
+func TestCollectAndBackfillWithoutCharactersPointToTheWebLogin(t *testing.T) {
+	for _, cmd := range []string{"collect", "backfill"} {
+		h := newHarness(t, map[string]string{"HOME": "/home/u"})
+		h.tokens.chars = nil
+		if got := run(context.Background(), []string{cmd}, h.deps); got != 1 {
+			t.Fatalf("%s: exit = %d, want 1", cmd, got)
+		}
+		msg := h.err.String()
+		for _, want := range []string{"no characters registered", "eve-wallets serve", "http://localhost:8088"} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("%s: stderr missing %q: %q", cmd, want, msg)
+			}
+		}
+		if h.out.String() != "" {
+			t.Errorf("%s: unexpected stdout %q", cmd, h.out.String())
+		}
+	}
+}
+
+func TestUsageNoLongerMentionsEveAuth(t *testing.T) {
+	if strings.Contains(usage, "EVE_AUTH_BIN") || strings.Contains(usage, "EVE_CLIENT_ID") {
+		t.Errorf("usage still documents the retired eve-auth variables:\n%s", usage)
 	}
 }
 
@@ -324,18 +379,6 @@ func TestCollectFatalError(t *testing.T) {
 	}
 	if !strings.Contains(h.err.String(), "boom") {
 		t.Errorf("stderr = %q", h.err.String())
-	}
-}
-
-func TestCollectEveAuthNotFound(t *testing.T) {
-	h := newHarness(t, map[string]string{"HOME": "/home/u", "EVE_AUTH_BIN": "/nope/eve-auth"})
-	h.tokens.listErr = fmt.Errorf("auth: list characters: %w", &exec.Error{Name: "eve-auth", Err: exec.ErrNotFound})
-	if got := run(context.Background(), []string{"collect"}, h.deps); got != 1 {
-		t.Fatalf("exit = %d, want 1", got)
-	}
-	msg := h.err.String()
-	if !strings.Contains(msg, "eve-auth not found") || !strings.Contains(msg, "EVE_AUTH_BIN") || !strings.Contains(msg, "PATH") {
-		t.Errorf("stderr = %q", msg)
 	}
 }
 
@@ -354,7 +397,7 @@ func TestCollectReportsErrorsAndRateLimit(t *testing.T) {
 }
 
 func TestBackfillHappyPath(t *testing.T) {
-	h := newHarness(t, map[string]string{"EVE_AUTH_BIN": "/opt/eve-auth", "HOME": "/home/u"})
+	h := newHarness(t, map[string]string{"HOME": "/home/u"})
 	if got := run(context.Background(), []string{"backfill"}, h.deps); got != 0 {
 		t.Fatalf("exit = %d; stderr = %q", got, h.err.String())
 	}
@@ -367,8 +410,8 @@ func TestBackfillHappyPath(t *testing.T) {
 	if strings.Contains(out+h.err.String(), "secret-token") {
 		t.Error("token leaked into the output")
 	}
-	if h.openedBin != "/opt/eve-auth" || h.dbPath != "/home/u/.local/share/eve-wallets/wallets.db" {
-		t.Errorf("bin = %q, db = %q", h.openedBin, h.dbPath)
+	if h.dbPath != "/home/u/.local/share/eve-wallets/wallets.db" {
+		t.Errorf("db = %q", h.dbPath)
 	}
 }
 

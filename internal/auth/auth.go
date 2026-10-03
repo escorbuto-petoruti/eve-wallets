@@ -27,11 +27,14 @@ const (
 	emptyStoreMsg  = "No characters saved."
 )
 
-// Character is an authenticated EVE character known to eve-auth.
+// Character is an authenticated EVE character with a usable token.
 type Character struct {
 	ID     int64
 	Name   string
 	Scopes []string
+	// UserID is the app user the character belongs to; 0 when the source has no
+	// notion of users (the eve-auth source).
+	UserID int64
 }
 
 // TokenSource lists the available characters and yields access tokens.
