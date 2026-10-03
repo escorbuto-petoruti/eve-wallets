@@ -67,6 +67,34 @@ func (s *Store) SaveToken(ctx context.Context, t Token) error {
 	return nil
 }
 
+// SaveTokenIfOwner is SaveToken that never takes a character over: in one
+// statement it inserts the token, or updates it only when the stored row
+// already belongs to t.UserID. applied is false, with nothing written, when the
+// character is attached to another user. The user must exist.
+func (s *Store) SaveTokenIfOwner(ctx context.Context, t Token) (applied bool, err error) {
+	if t.UpdatedAt.IsZero() {
+		t.UpdatedAt = time.Now()
+	}
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO tokens (character_id, user_id, character_name, refresh_token, scopes, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT (character_id) DO UPDATE SET
+			character_name = excluded.character_name,
+			refresh_token = excluded.refresh_token,
+			scopes = excluded.scopes,
+			updated_at = excluded.updated_at
+		WHERE tokens.user_id = excluded.user_id`,
+		t.CharacterID, t.UserID, t.CharacterName, t.RefreshToken, strings.Join(t.Scopes, " "), t.UpdatedAt.Unix())
+	if err != nil {
+		return false, fmt.Errorf("store: save token for character %d: %w", t.CharacterID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: save token for character %d: %w", t.CharacterID, err)
+	}
+	return n > 0, nil
+}
+
 const tokenColumns = `character_id, user_id, character_name, refresh_token, scopes, updated_at`
 
 func scanToken(sc interface{ Scan(...any) error }) (Token, error) {

@@ -607,3 +607,34 @@ func TestMoveFailuresAreNeverSilent(t *testing.T) {
 		}
 	})
 }
+
+// seedingSSO makes a foreign owner appear for the character while the callback
+// is validating it: after the session was resolved and before any save.
+type seedingSSO struct {
+	*fakeSSO
+	seed func()
+}
+
+func (s seedingSSO) Validate(ctx context.Context, accessToken string) (sso.Claims, error) {
+	if s.seed != nil {
+		s.seed()
+	}
+	return s.fakeSSO.Validate(ctx, accessToken)
+}
+
+func TestAddCharacterLosingARaceEndsInAPendingMove(t *testing.T) {
+	f := newFixture(t, nil, false)
+	h := New(Deps{Store: f.st, SSO: seedingSSO{f.sso, func() { attachCharacter(t, f) }}, Now: f.clock,
+		OnLogin: func(id int64) { f.mu.Lock(); f.logins = append(f.logins, id); f.mu.Unlock() }})
+	f.anon = h
+	ls := startAdd(t, f, f.aliceCookie)
+
+	rec := addCallbackRec(f, ls, f.aliceCookie)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/auth/confirm-move" {
+		t.Fatalf("status = %d, location = %q", rec.Code, rec.Header().Get("Location"))
+	}
+	if cookieNamed(rec, moveCookie) == nil {
+		t.Error("no eve_move cookie")
+	}
+	assertUntouched(t, f)
+}

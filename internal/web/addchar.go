@@ -149,12 +149,18 @@ func (s *server) finishAdd(w http.ResponseWriter, r *http.Request, flow loginFlo
 		errorPage(w, http.StatusForbidden, "Sign in as the same user that started this, then add the character again.")
 		return
 	}
-	owner, attached, err := s.deps.Store.TokenOwner(ctx, claims.CharacterID)
+	// One conditional write: it attaches a new character or refreshes one that is
+	// already this user's, and never overwrites another user's token, even if the
+	// character changed hands since the session was resolved.
+	applied, err := s.deps.Store.SaveTokenIfOwner(ctx, store.Token{
+		CharacterID: claims.CharacterID, UserID: u.UserID, CharacterName: claims.CharacterName,
+		RefreshToken: tokens.RefreshToken, Scopes: claims.Scopes, UpdatedAt: s.now(),
+	})
 	if err != nil {
 		errorPage(w, http.StatusInternalServerError, "Could not save the character.")
 		return
 	}
-	if attached && owner != u.UserID {
+	if !applied {
 		// Another user's character is never taken silently: hold it until the
 		// signed-in user confirms the move.
 		id, err := s.moves.add(pendingMove{
@@ -171,16 +177,6 @@ func (s *server) finishAdd(w http.ResponseWriter, r *http.Request, flow loginFlo
 		})
 		w.Header().Set("Cache-Control", "no-store")
 		http.Redirect(w, r, "/auth/confirm-move", http.StatusSeeOther)
-		return
-	}
-	// Not attached yet, or already this user's: attach or refresh under the
-	// session user's id.
-	err = s.deps.Store.SaveToken(ctx, store.Token{
-		CharacterID: claims.CharacterID, UserID: u.UserID, CharacterName: claims.CharacterName,
-		RefreshToken: tokens.RefreshToken, Scopes: claims.Scopes, UpdatedAt: s.now(),
-	})
-	if err != nil {
-		errorPage(w, http.StatusInternalServerError, "Could not save the character.")
 		return
 	}
 	if s.deps.OnLogin != nil {

@@ -605,3 +605,47 @@ func TestMoveTokenFailuresChangeNothing(t *testing.T) {
 		})
 	}
 }
+
+func TestSaveTokenIfOwner(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	seedMoveFixture(t, s) // character 3 belongs to user 1, character 2 to user 2
+
+	save := func(char, user int64, name, secret string) bool {
+		t.Helper()
+		applied, err := s.SaveTokenIfOwner(ctx, Token{
+			CharacterID: char, UserID: user, CharacterName: name, RefreshToken: secret,
+			Scopes: []string{"new.scope"}, UpdatedAt: t0,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return applied
+	}
+
+	if !save(9, 1, "Fresh", "fresh-secret") {
+		t.Error("a new character was not applied")
+	}
+	tok, ok, _ := s.GetToken(ctx, 9)
+	if !ok || tok.UserID != 1 || tok.RefreshToken != "fresh-secret" || tok.CharacterName != "Fresh" {
+		t.Errorf("new token = %+v ok=%v", tok, ok)
+	}
+
+	if !save(3, 1, "Renamed", "rotated") {
+		t.Error("the owner's own character was not applied")
+	}
+	tok, _, _ = s.GetToken(ctx, 3)
+	if tok.UserID != 1 || tok.RefreshToken != "rotated" || tok.CharacterName != "Renamed" ||
+		!reflect.DeepEqual(tok.Scopes, []string{"new.scope"}) {
+		t.Errorf("refreshed token = %+v", tok)
+	}
+
+	before, _, _ := s.GetToken(ctx, 2)
+	if save(2, 1, "Thief", "stolen") {
+		t.Error("another user's character was applied")
+	}
+	after, _, _ := s.GetToken(ctx, 2)
+	if !reflect.DeepEqual(before, after) {
+		t.Errorf("foreign token changed: %+v -> %+v", before, after)
+	}
+}
