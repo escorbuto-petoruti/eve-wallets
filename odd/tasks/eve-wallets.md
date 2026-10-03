@@ -22,7 +22,7 @@ ESI exposes only the current balance (`/wallets`) and a 30-day journal, so histo
 ## Tasks
 - [x] T1 module scaffold + `internal/store` (SQLite schema, snapshots as integer cents, migrations, queries for series) + tests
 - [x] T2 `internal/esi` client (headers, ETag, wallet balance, journal with pagination, character to corporation id) + httptest tests
-- [ ] T3 `internal/auth` TokenSource over `eve-auth` + `internal/collector` (snapshot all characters, graceful corp-role failure) + tests
+- [x] T3 `internal/auth` TokenSource over `eve-auth` + `internal/collector` (snapshot all characters, graceful corp-role failure) + tests
 - [ ] T4 `internal/web` + `cmd/eve-wallets`: `serve` (JSON API, embedded Chart.js page, background loop) and `collect`
 - [ ] T5 journal backfill of the last 30 days (idempotent, deduplicated)
 - [ ] T6 README: setup (eve-auth install, scopes, login), usage, limits
@@ -36,5 +36,7 @@ Branch `feat/eve-wallets-mvp`, initial commit on `main` (local, not pushed). T1 
 
 T2 done (delegated writer, test-first: RED observed on undefined symbols, then GREEN). `internal/esi`: `Client` with `CharacterWallet`, `CorporationWallets`, `CharacterJournal`, `CorporationJournal` (all pages, cap 50), `CharacterCorporationID`; exact cents via `ParseCents` (no float; exponent and sub-cent precision rejected); `*APIError`, `*RateLimitError` (420/429, Retry-After), `IsForbidden`/`IsNotFound`; ETag cache keyed by URL + token hash, 304 reuse, errors never cached; token scrubbed from errors. Evidence: `CGO_ENABLED=0 go vet ./...` clean; `go test ./...` ok; `go test -count=10 ./...` ok; `gofmt -l .` empty. Commit: `feat(esi): add ESI wallet client`.
 
+T3 done (delegated writer, test-first: RED observed on undefined symbols in both packages, then GREEN). `internal/auth`: `TokenSource`, `EveAuth` (injectable `Runner`, no shell, bounded and scrubbed stderr, token validated and never in errors, per-call timeout). `internal/collector`: `New(Deps).Run` with shared truncated `takenAt`, scope-based skips, 403 to `missing corporation role`, one snapshot per corp per run, per-item errors, rate-limit partial report (`RateLimited`, `RetryAfter`), ctx cancel. `internal/esi`: added `CorporationName`. Evidence: `CGO_ENABLED=0 go vet ./...` clean; `go test ./...` ok; `go test -count=10 ./...` ok; `gofmt -l .` empty. Commit: `feat(collector): collect wallet snapshots through eve-auth`.
+
 ## Next step
-T3: `internal/auth` TokenSource over `eve-auth` + `internal/collector`.
+T4: `internal/web` + `cmd/eve-wallets` (`serve`, `collect`).

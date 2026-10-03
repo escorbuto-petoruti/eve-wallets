@@ -333,3 +333,22 @@ type redactedError struct {
 
 func (e *redactedError) Error() string { return e.msg }
 func (e *redactedError) Unwrap() error { return e.err }
+
+// CorporationName returns the public name of a corporation. This endpoint is
+// public and sends no token.
+func (c *Client) CorporationName(ctx context.Context, corporationID int64) (string, error) {
+	body, _, err := c.get(ctx, "", fmt.Sprintf("/corporations/%d", corporationID), nil)
+	if err != nil {
+		return "", err
+	}
+	var info struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(body, &info); err != nil {
+		return "", fmt.Errorf("esi: decode corporation: %w", err)
+	}
+	if info.Name == "" {
+		return "", fmt.Errorf("esi: corporation %d response has no name", corporationID)
+	}
+	return info.Name, nil
+}

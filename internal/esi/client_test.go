@@ -384,3 +384,34 @@ func TestOversizedBody(t *testing.T) {
 		t.Fatal("want error")
 	}
 }
+
+func TestCorporationName(t *testing.T) {
+	c := newTestClient(t, false, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/corporations/98000001" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"name":"Acme Corp","ticker":"ACME"}`))
+	})
+	got, err := c.CorporationName(context.Background(), 98000001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "Acme Corp" {
+		t.Fatalf("name = %q", got)
+	}
+}
+
+func TestCorporationNameErrors(t *testing.T) {
+	c := newTestClient(t, false, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"ticker":"ACME"}`))
+	})
+	if _, err := c.CorporationName(context.Background(), 1); err == nil {
+		t.Fatal("want error for missing name")
+	}
+	c = newTestClient(t, false, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"nope"}`, http.StatusNotFound)
+	})
+	if _, err := c.CorporationName(context.Background(), 1); !IsNotFound(err) {
+		t.Fatalf("err = %v, want not found", err)
+	}
+}
