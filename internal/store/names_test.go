@@ -297,6 +297,9 @@ func TestDisplayNamePrecedenceAndSource(t *testing.T) {
 		{"label wins", Wallet{Kind: KindCorporation, OwnerName: "Acme", Division: 3, Label: "Ops", ESIName: "Mfg"}, "Ops", NameCustom},
 		{"esi when no label", Wallet{Kind: KindCorporation, OwnerName: "Acme", Division: 3, ESIName: "Mfg"}, "Mfg", NameESI},
 		{"corporation default", Wallet{Kind: KindCorporation, OwnerName: "Acme", Division: 3}, "Division 3", NameDefault},
+		{"master wallet default", Wallet{Kind: KindCorporation, OwnerName: "Acme", Division: 1}, "Master Wallet", NameDefault},
+		{"master wallet esi name wins", Wallet{Kind: KindCorporation, OwnerName: "Acme", Division: 1, ESIName: "Cash"}, "Cash", NameESI},
+		{"master wallet label wins", Wallet{Kind: KindCorporation, OwnerName: "Acme", Division: 1, Label: "Main"}, "Main", NameCustom},
 		{"character default", Wallet{Kind: KindCharacter, OwnerName: "Alice"}, "Alice", NameDefault},
 		{"character label", Wallet{Kind: KindCharacter, OwnerName: "Alice", Label: "Wallet"}, "Wallet", NameCustom},
 	}

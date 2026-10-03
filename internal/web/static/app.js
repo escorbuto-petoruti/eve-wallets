@@ -78,7 +78,7 @@
 
   // walletLabel is the character name or "<corporation> \u00b7 <name>".
   function walletLabel(w) {
-    var name = w.name || (w.kind === "character" ? w.owner_name : "Division " + w.division);
+    var name = w.name || (w.kind === "character" ? w.owner_name : w.division === 1 ? "Master Wallet" : "Division " + w.division);
     return w.kind === "character" ? name : w.owner_name + " \u00b7 " + name;
   }
   function ownerLabel(w) {
