@@ -24,7 +24,7 @@ ESI exposes only the current balance (`/wallets`) and a 30-day journal, so histo
 - [x] T2 `internal/esi` client (headers, ETag, wallet balance, journal with pagination, character to corporation id) + httptest tests
 - [x] T3 `internal/auth` TokenSource over `eve-auth` + `internal/collector` (snapshot all characters, graceful corp-role failure) + tests
 - [x] T4 `internal/web`: `web.New(Deps{Store, Status})`, JSON API, embedded offline Chart.js page, hardening headers
-- [ ] T5 `cmd/eve-wallets`: `serve` (web + background collect loop) and `collect`
+- [x] T5 `cmd/eve-wallets`: `serve` (web + background collect loop) and `collect`
 - [ ] T6 journal backfill of the last 30 days (idempotent, deduplicated)
 - [ ] T7 README: setup (eve-auth install, scopes, login), usage, limits
 
@@ -41,5 +41,9 @@ T3 done (delegated writer, test-first: RED observed on undefined symbols in both
 
 T4 done (delegated writer, test-first: RED observed on undefined symbols, then GREEN). `internal/web`: GET/HEAD only (405 with `Allow`), CSP `default-src 'self'`, nosniff, no-referrer on every response, no CORS, no directory listing (explicit static allowlist). API: `/api/wallets` (null cents when a wallet has no balance), `/api/series` (strict ids/RFC 3339 validation, caps: 50 ids and 10 years, unknown id gives empty series, optional `total=1` computed server-side by `SumForwardFill`), `/api/status` from `Deps.Status` (`StatusFromReport` adapts `collector.Report`). Page in plain JS/CSS embedded files (no inline scripts, `textContent` only, one chart with a line per selected wallet plus optional Total). Chart.js 4.5.1 vendored (MIT, sha256 in `internal/web/static/VENDORED.md`). Evidence: `CGO_ENABLED=0 go vet ./...` clean; `go test ./...` ok; `go test -count=10 ./internal/web/...` ok; `gofmt -l .` empty; smoke via throwaway server: `/`, `/api/wallets`, `/api/series` all 200. Commit: `feat(web): add wallet charts UI and JSON API`.
 
+T5 done (delegated writer; test-first for `cmd/eve-wallets`: RED observed on undefined symbols, then GREEN; the `internal/scheduler` tests and code were written together, so no separate RED there). `internal/scheduler`: `Loop{Every, Run, OnResult, Wait}.Start(ctx)` runs once immediately, waits `Every` after each run (no overlap), delays by `RetryAfter` only when `RateLimited` and longer than `Every`, survives run errors, stops on cancel during a wait or a run. `cmd/eve-wallets`: `run(ctx, args, deps)` with injected IO, env, store opener, token source, ESI factory and listener; `collect` (summary without tokens, exit 1 only on fatal error, clear `eve-auth` not found hint), `serve` (loopback-only `--addr` with no bypass, `--every` minimum 1m, `--no-collect`, `http.Server` timeouts, graceful shutdown: loop stopped, then `Shutdown`, then store closed); DB path order flag, `EVE_WALLETS_DB`, XDG, `~/.local/share`; dir 0700 and db/-wal/-shm 0600; user agent `eve-wallets/<version> (local)` with `-ldflags -X main.version`. Evidence: `CGO_ENABLED=0 go vet ./...` clean; `go test ./...` ok; `go test -count=10 ./internal/scheduler/... ./cmd/...` ok; `gofmt -l .` empty; built binary: `help` exit 2 with usage, `serve --addr 0.0.0.0:8088` refused with exit 2. Commit: `feat(cli): add serve and collect commands with a background loop`.
+
+Review note: the native review of T4 was escalated on a false positive caused by splitting the vendored Chart.js out of the reviewed range; the user decided to continue under ordinary repository policy (the review boundary for later assessments is 359b16f).
+
 ## Next step
-T5: `cmd/eve-wallets` (`serve` with background collect loop wired to `web.StatusFromReport`, and `collect`).
+T6: journal backfill of the last 30 days (idempotent, deduplicated).
