@@ -189,3 +189,25 @@ func TestCycleKeepsLargerSnapshotRetryAfter(t *testing.T) {
 		t.Errorf("rate limit = %v/%v, want true/5m", rep.RateLimited, rep.RetryAfter)
 	}
 }
+
+// The merge must keep the owner identity of backfill errors, not rebuild
+// identity-less ones, so the status endpoint can scope them to the user.
+func TestMergeBackfillKeepsOwnerIdentity(t *testing.T) {
+	f := &fakeCycler{backRep: collector.BackfillReport{
+		Skipped: []collector.Skip{{OwnerKind: store.KindCorporation, OwnerID: 900, Owner: "Acme", Reason: "missing corporation role"}},
+		Errors:  []collector.ItemError{{OwnerKind: store.KindCorporation, OwnerID: 900, Owner: "Acme", Err: errors.New("back boom")}},
+	}}
+	rep, err := newCycle(f, true)(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Skipped) != 1 || rep.Skipped[0] != (collector.Skip{OwnerKind: store.KindCorporation, OwnerID: 900, Owner: "Acme", Reason: "missing corporation role"}) {
+		t.Errorf("skipped = %+v, want the owner identity kept", rep.Skipped)
+	}
+	if len(rep.Errors) != 1 {
+		t.Fatalf("errors = %+v", rep.Errors)
+	}
+	if e := rep.Errors[0]; e.OwnerKind != store.KindCorporation || e.OwnerID != 900 || e.Owner != "backfill: Acme" || e.Error() != "backfill: Acme: back boom" {
+		t.Errorf("error = %+v, want the owner identity kept and the backfill prefix", e)
+	}
+}

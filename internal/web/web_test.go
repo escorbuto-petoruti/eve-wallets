@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,20 +20,76 @@ import (
 
 var base = time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 
+// fixture serves the app over a real SQLite file. f.h is the handler seen by a
+// browser signed in as Alice (user 1) when the request carries no cookie of
+// its own; f.anon is the bare handler.
 type fixture struct {
-	h              http.Handler
+	h, anon        http.Handler
 	st             *store.Store
+	dbPath         string
 	charID, corpID int64 // wallet ids
+	sso            *fakeSSO
+	now            atomic.Int64 // unix seconds
+	logins         []int64
+	aliceCookie    string
+	mu             sync.Mutex
+}
+
+func (f *fixture) clock() time.Time { return time.Unix(f.now.Load(), 0).UTC() }
+
+func (f *fixture) loggedIn() []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int64(nil), f.logins...)
+}
+
+// newSession stores a session of userID and returns the cookie value.
+func (f *fixture) newSession(t *testing.T, userID int64, ttl time.Duration) string {
+	t.Helper()
+	val := "session-value-" + strconv.FormatInt(userID, 10) + "-" + strconv.FormatInt(int64(ttl), 10)
+	if err := f.st.CreateSession(context.Background(), hashSession(val), userID, f.clock(), f.clock().Add(ttl)); err != nil {
+		t.Fatal(err)
+	}
+	return val
+}
+
+func (f *fixture) link(t *testing.T, userID, walletID int64) {
+	t.Helper()
+	if err := f.st.LinkWallet(context.Background(), userID, walletID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f *fixture) addUser(t *testing.T, id int64, name string) {
+	t.Helper()
+	if err := f.st.UpsertUser(context.Background(), id, name, f.clock()); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func newFixture(t *testing.T, status func() StatusSnapshot, seed bool) *fixture {
 	t.Helper()
-	st, err := store.Open(t.TempDir() + "/w.db")
+	path := t.TempDir() + "/w.db"
+	st, err := store.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	f := &fixture{st: st, h: New(Deps{Store: st, Status: status})}
+	f := &fixture{st: st, dbPath: path, sso: newFakeSSO()}
+	f.now.Store(base.Unix())
+	f.anon = New(Deps{Store: st, Status: status, SSO: f.sso, Now: f.clock, OnLogin: func(id int64) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.logins = append(f.logins, id)
+	}})
+	f.addUser(t, 1, "Alice")
+	f.aliceCookie = f.newSession(t, 1, 7*24*time.Hour)
+	f.h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := r.Cookie(sessionCookie); err != nil {
+			r.AddCookie(&http.Cookie{Name: sessionCookie, Value: f.aliceCookie})
+		}
+		f.anon.ServeHTTP(w, r)
+	})
 	if !seed {
 		return f
 	}
@@ -43,6 +101,11 @@ func newFixture(t *testing.T, status func() StatusSnapshot, seed bool) *fixture 
 	f.corpID, err = st.UpsertWallet(ctx, store.Wallet{Kind: store.KindCorporation, OwnerID: 9, OwnerName: "Corp", Division: 3})
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, id := range []int64{f.charID, f.corpID} {
+		if err := st.LinkWallet(ctx, 1, id); err != nil {
+			t.Fatal(err)
+		}
 	}
 	mustSnap := func(id int64, at time.Time, cents int64) {
 		t.Helper()
@@ -58,7 +121,9 @@ func newFixture(t *testing.T, status func() StatusSnapshot, seed bool) *fixture 
 
 func do(h http.Handler, method, target string) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(method, target, nil))
+	req := httptest.NewRequest(method, target, nil)
+	req.Host = "localhost"
+	h.ServeHTTP(rec, req)
 	return rec
 }
 
@@ -127,6 +192,7 @@ func TestWalletsExposeNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.link(t, 1, esiID)
 	if err := f.st.SetESIName(ctx, esiID, "Ops"); err != nil {
 		t.Fatal(err)
 	}
@@ -175,9 +241,11 @@ func TestWalletsDefaultDivisionName(t *testing.T) {
 
 func TestWalletsWithoutBalanceHaveNullCents(t *testing.T) {
 	f := newFixture(t, nil, false)
-	if _, err := f.st.UpsertWallet(context.Background(), store.Wallet{Kind: store.KindCharacter, OwnerID: 5, OwnerName: "Bob"}); err != nil {
+	id, err := f.st.UpsertWallet(context.Background(), store.Wallet{Kind: store.KindCharacter, OwnerID: 5, OwnerName: "Bob"})
+	if err != nil {
 		t.Fatal(err)
 	}
+	f.link(t, 1, id)
 	rec := do(f.h, http.MethodGet, "/api/wallets")
 	if !strings.Contains(rec.Body.String(), `"cents":null`) {
 		t.Fatalf("body = %s", rec.Body.String())
@@ -319,10 +387,12 @@ func TestStatus(t *testing.T) {
 		TakenAt:       base,
 		Snapshots:     make([]collector.Snapshot, 3),
 		JournalPoints: 42,
-		Skipped:       []collector.Skip{{Owner: "Alice", Reason: "missing corporation role"}},
-		Errors:        []collector.ItemError{{Owner: "Bob", Err: errBoom{}}},
-		RateLimited:   true,
-		RetryAfter:    90 * time.Second,
+		// Attributed to the signed-in user's character: a skip without an
+		// owner identity is never shown to anyone.
+		Skipped:     []collector.Skip{{OwnerKind: store.KindCharacter, OwnerID: 1, Owner: "Alice", Reason: "missing corporation role"}},
+		Errors:      []collector.ItemError{{Owner: "Bob", Err: errBoom{}}}, // no identity: run-level, shown
+		RateLimited: true,
+		RetryAfter:  90 * time.Second,
 	}
 	f := newFixture(t, func() StatusSnapshot { return StatusFromReport(rep) }, false)
 	rec := do(f.h, http.MethodGet, "/api/status")
@@ -412,7 +482,7 @@ func TestIndexAndStatic(t *testing.T) {
 			t.Errorf("%s empty body", tt.path)
 		}
 	}
-	if body := do(f.h, http.MethodGet, "/").Body.String(); !strings.Contains(body, "eve-wallets collect") {
+	if body := do(f.h, http.MethodGet, "/").Body.String(); !strings.Contains(body, "Collecting your wallets") {
 		t.Error("index lacks the empty-state hint")
 	}
 }
@@ -458,5 +528,133 @@ func TestAppJSNeverUsesInnerHTML(t *testing.T) {
 		if strings.Contains(string(b), bad) {
 			t.Errorf("app.js uses %s", bad)
 		}
+	}
+}
+
+// The status is scoped to the signed-in user: a skip or attributed error is
+// shown only when the user can see its owner; a skip without an identity is
+// never shown (it belongs to someone, a missing identity is a bug); an error
+// without an identity is a run-level error and is shown to every user. The
+// counters stay global: they describe the process cycle.
+func TestStatusScopesSkipsAndErrorsToUser(t *testing.T) {
+	rep := collector.Report{
+		TakenAt:       base,
+		Snapshots:     make([]collector.Snapshot, 2),
+		JournalPoints: 7,
+		Skipped: []collector.Skip{
+			{OwnerKind: store.KindCharacter, OwnerID: 1, Owner: "Alice", Reason: "missing scope esi-wallet.read_corporation_wallets.v1"},
+			{OwnerKind: store.KindCorporation, OwnerID: 20, Owner: "Cuervos Imperiales", Reason: "missing corporation role"},
+			{Owner: "Mystery", Reason: "missing corporation role"}, // no identity: a bug, never shown
+		},
+		Errors: []collector.ItemError{
+			{OwnerKind: store.KindCorporation, OwnerID: 20, Owner: "Cuervos Imperiales", Err: errBoom{}},
+		},
+	}
+	snap := StatusFromReport(rep)
+	snap.Errors = append(snap.Errors, ErrorItem{Message: "collection failed: boom"}) // run-level, no owner
+	f := newFixture(t, func() StatusSnapshot { return snap }, false)
+	f.addUser(t, 2, "Bob")
+	ctx := context.Background()
+	charID, err := f.st.UpsertWallet(ctx, store.Wallet{Kind: store.KindCharacter, OwnerID: 1, OwnerName: "Alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	corpID, err := f.st.UpsertWallet(ctx, store.Wallet{Kind: store.KindCorporation, OwnerID: 20, OwnerName: "Cuervos Imperiales", Division: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.link(t, 1, charID)
+	f.link(t, 2, corpID)
+
+	type item struct {
+		Owner  string
+		Reason string
+	}
+	var view func(rec *httptest.ResponseRecorder) (skipped []item, errs []string)
+	view = func(rec *httptest.ResponseRecorder) (skipped []item, errs []string) {
+		var got struct {
+			Skipped []item   `json:"skipped"`
+			Errors  []string `json:"errors"`
+		}
+		decode(t, rec, &got)
+		return got.Skipped, got.Errors
+	}
+
+	// Alice sees her own skip and the run-level error, and nothing of Bob's.
+	rec := do(f.h, http.MethodGet, "/api/status")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var counters struct {
+		TakenAt       *int64 `json:"taken_at"`
+		Snapshots     int    `json:"snapshots"`
+		JournalPoints int    `json:"journal_points"`
+	}
+	decode(t, rec, &counters)
+	if counters.TakenAt == nil || *counters.TakenAt != base.Unix() || counters.Snapshots != 2 || counters.JournalPoints != 7 {
+		t.Errorf("counters = %+v, want taken_at %d, 2 snapshots, 7 journal points", counters, base.Unix())
+	}
+	skipped, errs := view(rec)
+	if len(skipped) != 1 || skipped[0].Owner != "Alice" {
+		t.Errorf("skipped = %+v, want only Alice's own skip", skipped)
+	}
+	if len(errs) != 1 || errs[0] != "collection failed: boom" {
+		t.Errorf("errors = %q, want only the run-level error", errs)
+	}
+
+	// Bob sees his corporation's skip and error, and nothing of Alice's.
+	bob := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	bob.Host = "localhost"
+	bob.AddCookie(&http.Cookie{Name: sessionCookie, Value: f.newSession(t, 2, time.Hour)})
+	rec = httptest.NewRecorder()
+	f.anon.ServeHTTP(rec, bob)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	skipped, errs = view(rec)
+	if len(skipped) != 1 || skipped[0].Owner != "Cuervos Imperiales" {
+		t.Errorf("skipped = %+v, want only the Cuervos Imperiales skip", skipped)
+	}
+	if len(errs) != 2 || errs[0] != "Cuervos Imperiales: boom" || errs[1] != "collection failed: boom" {
+		t.Errorf("errors = %q, want the corp error and the run-level error", errs)
+	}
+}
+
+// The wallet links are keyed by the session user id, not the character id, so
+// the status must scope with store.User.UserID: today the two are equal only
+// because users.character_id is the primary key the FKs point at. A character
+// skip legitimately carries a character id, so it stays compared to
+// CharacterID (its owner is the signed-in character).
+func TestStatusScopesByUserIDNotCharacterID(t *testing.T) {
+	rep := collector.Report{
+		TakenAt: base,
+		Skipped: []collector.Skip{
+			{OwnerKind: store.KindCharacter, OwnerID: 1, Owner: "Alice", Reason: "missing scope esi-wallet.read_corporation_wallets.v1"},
+			{OwnerKind: store.KindCorporation, OwnerID: 9, Owner: "Acme", Reason: "missing corporation role"},
+		},
+	}
+	f := newFixture(t, func() StatusSnapshot { return StatusFromReport(rep) }, false)
+	// The signed-in user has internal id 7 but character id 1: only user 7
+	// has the wallet link that should make Acme's skip visible.
+	if err := f.st.UpsertUser(context.Background(), 7, "Dana", f.clock()); err != nil {
+		t.Fatal(err)
+	}
+	corpID, err := f.st.UpsertWallet(context.Background(), store.Wallet{Kind: store.KindCorporation, OwnerID: 9, OwnerName: "Acme", Division: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.link(t, 7, corpID)
+	s := &server{deps: Deps{Store: f.st, Status: func() StatusSnapshot { return StatusFromReport(rep) }, Now: f.clock}}
+	rec := httptest.NewRecorder()
+	s.status(rec, httptest.NewRequest(http.MethodGet, "/api/status", nil), store.User{UserID: 7, CharacterID: 1})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var got struct {
+		Skipped []struct{ Owner string } `json:"skipped"`
+	}
+	decode(t, rec, &got)
+	if len(got.Skipped) != 2 || got.Skipped[0].Owner != "Alice" || got.Skipped[1].Owner != "Acme" {
+		t.Errorf("skipped = %+v, want Alice (by character id) and Acme (by user id)", got.Skipped)
 	}
 }

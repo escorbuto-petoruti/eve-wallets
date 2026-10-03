@@ -11,8 +11,8 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -24,6 +24,7 @@ import (
 	"github.com/escorbuto-petoruti/eve-wallets/internal/collector"
 	"github.com/escorbuto-petoruti/eve-wallets/internal/esi"
 	"github.com/escorbuto-petoruti/eve-wallets/internal/scheduler"
+	"github.com/escorbuto-petoruti/eve-wallets/internal/sso"
 	"github.com/escorbuto-petoruti/eve-wallets/internal/store"
 	"github.com/escorbuto-petoruti/eve-wallets/internal/web"
 )
@@ -36,7 +37,6 @@ const (
 	defaultEvery  = 30 * time.Minute
 	minEvery      = time.Minute
 	shutdownGrace = 10 * time.Second
-	defaultAuth   = "eve-auth"
 )
 
 const usage = `Usage:
@@ -55,8 +55,6 @@ Commands:
   label    set (or --clear) the name shown for a wallet; flags go before the id
 
 Environment:
-  EVE_AUTH_BIN    eve-auth executable (default "eve-auth")
-  EVE_CLIENT_ID   passed through to eve-auth
   EVE_WALLETS_DB  database path (the --db flag wins)
 `
 
@@ -65,9 +63,10 @@ type deps struct {
 	stdout, stderr io.Writer
 	getenv         func(string) string
 	openStore      func(path string) (*store.Store, error)
-	newTokens      func(bin string) auth.TokenSource
+	newTokens      func(st *store.Store) auth.TokenSource
 	newESI         func(userAgent string) collector.ESIClient
 	listen         func(network, addr string) (net.Listener, error)
+	newSSO         func() web.SSO
 }
 
 func main() {
@@ -77,11 +76,12 @@ func main() {
 		stderr:    os.Stderr,
 		getenv:    os.Getenv,
 		openStore: openSecureStore,
-		newTokens: func(bin string) auth.TokenSource { return auth.NewEveAuth(auth.Options{Bin: bin}) },
+		newTokens: newStoreTokens,
 		newESI: func(ua string) collector.ESIClient {
 			return esi.New(esi.Options{UserAgent: ua})
 		},
 		listen: net.Listen,
+		newSSO: func() web.SSO { return sso.NewClient(sso.DefaultConfig()) },
 	})
 	stop()
 	os.Exit(code)
@@ -134,18 +134,19 @@ func newFlagSet(name string, d deps) *flag.FlagSet {
 	return fset
 }
 
-func authBin(getenv func(string) string) string {
-	if b := getenv("EVE_AUTH_BIN"); b != "" {
-		return b
-	}
-	return defaultAuth
+// newStoreTokens builds the production token source: the refresh tokens kept
+// in st, exchanged at EVE SSO with the embedded client.
+func newStoreTokens(st *store.Store) auth.TokenSource {
+	return auth.NewStoreTokens(st, sso.NewClient(sso.DefaultConfig()), nil)
 }
 
-// buildCollector wires the collaborators around st. The eve-auth subprocess
-// inherits the process environment, so EVE_CLIENT_ID needs no extra wiring.
-func buildCollector(d deps, st *store.Store) *collector.Collector {
+// noCharactersMsg is shown by the one-shot commands when nobody has signed in.
+const noCharactersMsg = "eve-wallets: no characters registered: run `eve-wallets serve`, open http://localhost:8088 and sign in with EVE SSO\n"
+
+// buildCollector wires the collaborators around st and tokens.
+func buildCollector(d deps, st *store.Store, tokens auth.TokenSource) *collector.Collector {
 	return collector.New(collector.Deps{
-		Auth:  d.newTokens(authBin(d.getenv)),
+		Auth:  tokens,
 		ESI:   d.newESI("eve-wallets/" + version + " (local)"),
 		Store: st,
 	})
@@ -171,11 +172,15 @@ func runCollector(ctx context.Context, name, what string, args []string, d deps,
 	}
 	defer st.Close()
 
-	if err := do(buildCollector(d, st)); err != nil {
+	// The token source reads the store that was just opened. A failing list is
+	// left for the collector to report; only a clean, empty list gets the hint.
+	tokens := d.newTokens(st)
+	if chars, err := tokens.Characters(ctx); err == nil && len(chars) == 0 {
+		fmt.Fprint(d.stderr, noCharactersMsg)
+		return 1
+	}
+	if err := do(buildCollector(d, st, tokens)); err != nil {
 		fmt.Fprintf(d.stderr, "eve-wallets: %s failed: %v\n", what, err)
-		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
-			fmt.Fprintf(d.stderr, "eve-wallets: eve-auth not found: install it on PATH or set EVE_AUTH_BIN (currently %q)\n", authBin(d.getenv))
-		}
 		return 1
 	}
 	return 0
@@ -308,17 +313,20 @@ func runServe(ctx context.Context, args []string, d deps) int {
 		mu     sync.Mutex
 		status web.StatusSnapshot
 	)
+	var onLogin func(int64) // stays nil with --no-collect
 	loopCtx, stopLoop := context.WithCancel(ctx)
 	defer stopLoop()
 	var loopDone sync.WaitGroup
 	if !*noCollect {
 		loop := &scheduler.Loop{
 			Every: *every,
-			Run:   newCycle(buildCollector(d, st), !*noBackfill),
+			Run:   newCycle(buildCollector(d, st, d.newTokens(st)), !*noBackfill),
 			OnResult: func(rep collector.Report, err error) {
 				snap := web.StatusFromReport(rep)
 				if err != nil && ctx.Err() == nil {
-					snap.Errors = append(snap.Errors, "collection failed: "+err.Error())
+					// No owner identity: the run itself failed, so every signed-in
+					// user sees the error.
+					snap.Errors = append(snap.Errors, web.ErrorItem{Message: "collection failed: " + err.Error()})
 					fmt.Fprintf(d.stderr, "eve-wallets: collection failed: %v\n", err)
 				}
 				mu.Lock()
@@ -326,6 +334,7 @@ func runServe(ctx context.Context, args []string, d deps) int {
 				mu.Unlock()
 			},
 		}
+		onLogin = func(int64) { loop.Trigger() } // do not wait for the next interval
 		loopDone.Add(1)
 		go func() {
 			defer loopDone.Done()
@@ -336,11 +345,17 @@ func runServe(ctx context.Context, args []string, d deps) int {
 	}
 
 	srv := &http.Server{
-		Handler: web.New(web.Deps{Store: st, Status: func() web.StatusSnapshot {
-			mu.Lock()
-			defer mu.Unlock()
-			return status
-		}}),
+		Handler: web.New(web.Deps{
+			Store: st,
+			Status: func() web.StatusSnapshot {
+				mu.Lock()
+				defer mu.Unlock()
+				return status
+			},
+			SSO:         d.newSSO(),
+			OnLogin:     onLogin,
+			AllowedPort: listenPort(ln.Addr().String()),
+		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -350,6 +365,9 @@ func runServe(ctx context.Context, args []string, d deps) int {
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(ln) }()
 	fmt.Fprintf(d.stdout, "Serving on http://%s (database %s)\n", ln.Addr(), path)
+	if w := ssoPortWarning(ln.Addr().String()); w != "" {
+		fmt.Fprintln(d.stderr, w)
+	}
 
 	code := 0
 	select {
@@ -430,4 +448,27 @@ func openSecureStore(path string) (*store.Store, error) {
 		}
 	}
 	return st, nil
+}
+
+// listenPort returns the port of a host:port address, or "" when it has none.
+func listenPort(addr string) string {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return ""
+	}
+	return port
+}
+
+// ssoPortWarning returns a one-line warning when the server listens on a port
+// other than the one in the fixed SSO redirect URL, or "" when they match.
+func ssoPortWarning(listenAddr string) string {
+	want := ""
+	if u, err := url.Parse(sso.DefaultRedirectURL); err == nil {
+		want = u.Port()
+	}
+	port := listenPort(listenAddr)
+	if port == want {
+		return ""
+	}
+	return fmt.Sprintf("eve-wallets: warning: listening on port %s but the SSO redirect URL is registered for port %s, so SSO login will not work here (use --addr 127.0.0.1:%s)", port, want, want)
 }

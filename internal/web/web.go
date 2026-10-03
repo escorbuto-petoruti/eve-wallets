@@ -29,33 +29,59 @@ type Deps struct {
 	Store *store.Store
 	// Status returns the last collection summary. It may be nil.
 	Status func() StatusSnapshot
+	// SSO signs users in. Without it /auth/login answers 503.
+	SSO SSO
+	// Now is the clock; it defaults to time.Now.
+	Now func() time.Time
+	// OnLogin runs after a successful sign-in with the user id. It may be nil.
+	OnLogin func(userID int64)
+	// AllowedPort is the port of the listener: a Host header may carry it (or no
+	// port) next to a loopback name. Any other port is refused.
+	AllowedPort string
 }
 
 type server struct {
-	deps Deps
+	deps  Deps
+	flows *loginFlows
 }
+
+func (s *server) now() time.Time { return s.deps.Now() }
 
 // New returns the handler for the local web app.
 func New(deps Deps) http.Handler {
+	if deps.Now == nil {
+		deps.Now = time.Now
+	}
 	s := &server{deps: deps}
+	s.flows = newLoginFlows(s.now)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/{$}", s.index)
 	mux.HandleFunc("/static/{name}", s.static)
-	mux.HandleFunc("/api/wallets", s.wallets)
-	mux.HandleFunc("/api/series", s.series)
-	mux.HandleFunc("/api/status", s.status)
-	return guard(mux)
+	mux.HandleFunc("GET /auth/login", s.login)
+	mux.HandleFunc("GET /auth/callback", s.callback)
+	mux.HandleFunc("POST /auth/logout", s.logout)
+	mux.HandleFunc("/api/me", requireUser(s.me))
+	mux.HandleFunc("/api/wallets", requireUser(s.wallets))
+	mux.HandleFunc("/api/series", requireUser(s.series))
+	mux.HandleFunc("/api/status", requireUser(s.status))
+	return s.guard(s.withSession(mux))
 }
 
-// guard sets the hardening headers on every response and allows only GET and
-// HEAD.
-func guard(next http.Handler) http.Handler {
+// guard sets the hardening headers on every response, refuses a Host that is not
+// the local app (DNS rebinding) and allows only GET and HEAD, except for
+// POST /auth/logout.
+func (s *server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("Content-Security-Policy", "default-src 'self'")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		if !allowedHost(r.Host, s.deps.AllowedPort) {
+			writeError(w, http.StatusForbidden, "forbidden host")
+			return
+		}
+		logout := r.Method == http.MethodPost && r.URL.Path == "/auth/logout"
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && !logout {
 			h.Set("Allow", "GET, HEAD")
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
@@ -111,14 +137,15 @@ type walletJSON struct {
 	BalanceTime *int64           `json:"balance_time"`
 }
 
-func (s *server) wallets(w http.ResponseWriter, r *http.Request) {
+func (s *server) wallets(w http.ResponseWriter, r *http.Request, u store.User) {
 	ctx := r.Context()
-	wallets, err := s.deps.Store.Wallets(ctx)
+	// The wallet links are keyed by the user id, not the character id.
+	wallets, err := s.deps.Store.WalletsForUser(ctx, u.UserID)
 	if err != nil {
 		serverError(w, err)
 		return
 	}
-	latest, err := s.deps.Store.LatestBalances(ctx)
+	latest, err := s.deps.Store.LatestBalancesForUser(ctx, u.UserID)
 	if err != nil {
 		serverError(w, err)
 		return
@@ -145,7 +172,7 @@ type seriesJSON struct {
 	Points   []Point `json:"points"`
 }
 
-func (s *server) series(w http.ResponseWriter, r *http.Request) {
+func (s *server) series(w http.ResponseWriter, r *http.Request, u store.User) {
 	q := r.URL.Query()
 	ids, err := parseIDs(q.Get("wallet_ids"))
 	if err != nil {
@@ -184,7 +211,8 @@ func (s *server) series(w http.ResponseWriter, r *http.Request) {
 
 	out := map[string]any{"series": []seriesJSON{}}
 	if len(ids) > 0 || !q.Has("wallet_ids") {
-		pts, err := s.deps.Store.Series(r.Context(), store.SeriesFilter{WalletIDs: ids, From: from, To: to})
+		// The wallet links are keyed by the user id, not the character id.
+		pts, err := s.deps.Store.SeriesForUser(r.Context(), u.UserID, store.SeriesFilter{WalletIDs: ids, From: from, To: to})
 		if err != nil {
 			serverError(w, err)
 			return
@@ -262,18 +290,54 @@ func parseTime(raw, name string) (time.Time, error) {
 	return t, nil
 }
 
-func (s *server) status(w http.ResponseWriter, r *http.Request) {
+// status scopes the last collection to the signed-in user. A skip or an
+// attributed error is shown only when the user can see its owner: their own
+// character, or a corporation of their linked wallets. An error without an
+// owner identity is a run-level error (the collector process, not a user) and
+// is shown to every signed-in user; a skip without one is never shown (a skip
+// always belongs to someone, a missing identity is a bug). The counters stay
+// global: they describe the process cycle.
+func (s *server) status(w http.ResponseWriter, r *http.Request, u store.User) {
 	var st StatusSnapshot
 	if s.deps.Status != nil {
 		st = s.deps.Status()
 	}
-	skipped := st.Skipped
-	if skipped == nil {
-		skipped = []SkippedItem{}
+	// The wallet links are keyed by the user id (sessions.user_id), not the
+	// character id: scope by u.UserID. A character skip belongs to the
+	// signed-in character, and its OwnerID is that character's id, so it stays
+	// compared to u.CharacterID.
+	wallets, err := s.deps.Store.WalletsForUser(r.Context(), u.UserID)
+	if err != nil {
+		serverError(w, err)
+		return
 	}
-	errs := st.Errors
-	if errs == nil {
-		errs = []string{}
+	corps := make(map[int64]bool, len(wallets))
+	for _, wl := range wallets {
+		if wl.Kind == store.KindCorporation {
+			corps[wl.OwnerID] = true
+		}
+	}
+	canSee := func(kind store.Kind, ownerID int64) bool {
+		switch kind {
+		case store.KindCharacter:
+			return ownerID == u.CharacterID // a character skip carries a character id
+		case store.KindCorporation:
+			return corps[ownerID]
+		default:
+			return false
+		}
+	}
+	skipped := []SkippedItem{}
+	for _, it := range st.Skipped {
+		if canSee(it.OwnerKind, it.OwnerID) {
+			skipped = append(skipped, it)
+		}
+	}
+	errs := []string{}
+	for _, it := range st.Errors {
+		if it.OwnerKind == "" || canSee(it.OwnerKind, it.OwnerID) {
+			errs = append(errs, it.Message)
+		}
 	}
 	var takenAt *int64
 	if st.TakenAt != 0 {

@@ -9,13 +9,34 @@
 </head>
 <body>
 <header>
-  <h1>EVE wallets</h1>
+  <div class="topbar">
+    <h1>EVE wallets</h1>
+    <div id="user-bar" class="user-bar" hidden>
+      <span class="muted">Signed in as <strong id="user-name"></strong></span>
+      <form method="post" action="/auth/logout">
+        <button type="submit">Sign out</button>
+      </form>
+    </div>
+  </div>
   <p id="updated" class="muted"></p>
 </header>
 <main>
+  <section id="signed-out" class="card" aria-labelledby="signed-out-title" hidden>
+    <h2 id="signed-out-title">Sign in</h2>
+    <p id="session-message" class="warn" role="status" aria-live="polite"></p>
+    <p>Sign in with your EVE Online character to see its wallets.</p>
+    <p><a class="button primary" href="/auth/login">Sign in with EVE Online</a></p>
+  </section>
+
+  <div id="signed-in" hidden>
+  <section id="collecting" class="card" hidden>
+    <h2>Collecting your wallets</h2>
+    <p id="collecting-text" role="status" aria-live="polite">Collecting your wallets… this can take a minute.</p>
+  </section>
+
   <section id="empty" class="card" hidden>
-    <h2>No data yet</h2>
-    <p>No wallet balances have been collected. Run <code>eve-wallets collect</code> and reload this page.</p>
+    <h2>Cannot load wallets</h2>
+    <p id="empty-text" class="bad"></p>
   </section>
 
   <section id="controls" class="card" hidden>
@@ -52,6 +73,7 @@
     <h2>Last collection</h2>
     <div id="status"></div>
   </section>
+  </div>
 </main>
 <script src="/static/chart.umd.min.js"></script>
 <script src="/static/app.js"></script>

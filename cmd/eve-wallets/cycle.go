@@ -34,7 +34,8 @@ func newCycle(c cycler, backfill bool) func(context.Context) (collector.Report, 
 func mergeBackfill(rep collector.Report, back collector.BackfillReport, err error, report bool) collector.Report {
 	rep.Skipped = append(rep.Skipped, back.Skipped...)
 	for _, e := range back.Errors {
-		rep.Errors = append(rep.Errors, collector.ItemError{Owner: "backfill: " + e.Owner, Err: e.Err})
+		e.Owner = "backfill: " + e.Owner // the identity stays, only the label grows
+		rep.Errors = append(rep.Errors, e)
 	}
 	if err != nil && report {
 		rep.Errors = append(rep.Errors, collector.ItemError{Owner: "backfill", Err: err})

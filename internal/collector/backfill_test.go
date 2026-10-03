@@ -258,3 +258,61 @@ func TestBackfillListFailureIsFatal(t *testing.T) {
 		t.Fatal("want error")
 	}
 }
+
+// Backfill skips and errors must carry the owner identity too, so the status
+// endpoint can scope them to the signed-in user.
+func TestBackfillSkipsAndErrorsCarryOwnerIdentity(t *testing.T) {
+	a := &fakeAuth{chars: []auth.Character{
+		{ID: 1, Name: "Alice", Scopes: []string{charScope, corpScope}}, // corporation journal store fails
+		{ID: 2, Name: "Bob", Scopes: []string{charScope}},              // corporation scope missing
+		{ID: 3, Name: "Cara", Scopes: []string{charScope, corpScope}},  // corporation journal forbidden
+	}}
+	e := &fakeESI{
+		corpOf: map[int64]int64{1: 900, 3: 800},
+		corpWallet: map[string][]esi.DivisionBalance{
+			"900/1": {{Division: 1}},
+			"800/3": {{Division: 1}},
+		},
+		corpErr: map[string]error{"800/3": forbidden()},
+		journals: map[string][]esi.JournalEntry{
+			"char/1":     {entry(10, day1, i64(1050))},
+			"corp/900/1": {entry(20, day1, i64(500))},
+		},
+	}
+	s := &fakeStore{journalErr: errors.New("db down")}
+	rep, err := newCollector(a, e, s).Backfill(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Skipped) != 2 || len(rep.Errors) != 2 {
+		t.Fatalf("skipped=%+v errors=%+v", rep.Skipped, rep.Errors)
+	}
+	for _, k := range rep.Skipped {
+		switch k.Reason {
+		case ReasonMissingRole:
+			if k.OwnerKind != store.KindCorporation || k.OwnerID != 800 || k.Owner != "Corp 800" {
+				t.Errorf("corporation skip = %+v, want kind corporation, id 800", k)
+			}
+		case "missing scope " + corpScope:
+			if k.OwnerKind != store.KindCharacter || k.OwnerID != 2 || k.Owner != "Bob" {
+				t.Errorf("character skip = %+v, want kind character, id 2", k)
+			}
+		default:
+			t.Errorf("unexpected skip = %+v", k)
+		}
+	}
+	for _, ie := range rep.Errors {
+		switch ie.Owner {
+		case "Alice":
+			if ie.OwnerKind != store.KindCharacter || ie.OwnerID != 1 {
+				t.Errorf("character error = %+v, want kind character, id 1", ie)
+			}
+		case "Corp 900 (division 1)":
+			if ie.OwnerKind != store.KindCorporation || ie.OwnerID != 900 {
+				t.Errorf("corporation error = %+v, want kind corporation, id 900", ie)
+			}
+		default:
+			t.Errorf("unexpected error = %+v", ie)
+		}
+	}
+}

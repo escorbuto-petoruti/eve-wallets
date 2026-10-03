@@ -5,6 +5,7 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/escorbuto-petoruti/eve-wallets/internal/collector"
@@ -23,6 +24,25 @@ type Loop struct {
 	// Wait pauses for d or until ctx ends, returning ctx's error in that case.
 	// It defaults to a timer; tests inject a fake.
 	Wait func(ctx context.Context, d time.Duration) error
+
+	once    sync.Once
+	trigger chan struct{}
+}
+
+func (l *Loop) triggers() chan struct{} {
+	l.once.Do(func() { l.trigger = make(chan struct{}, 1) })
+	return l.trigger
+}
+
+// Trigger asks for a run as soon as the loop is idle. It never blocks and is
+// safe to call from any goroutine, before or after Start: a run in progress is
+// never overlapped and repeated triggers collapse into a single extra run.
+// Triggers are ignored while the loop is backing off after a rate limit.
+func (l *Loop) Trigger() {
+	select {
+	case l.triggers() <- struct{}{}:
+	default:
+	}
 }
 
 // Start runs the loop until ctx is cancelled and then returns nil. It returns
@@ -39,6 +59,7 @@ func (l *Loop) Start(ctx context.Context) error {
 	if wait == nil {
 		wait = sleep
 	}
+	trig := l.triggers()
 	for {
 		rep, err := l.Run(ctx)
 		if l.OnResult != nil {
@@ -51,10 +72,50 @@ func (l *Loop) Start(ctx context.Context) error {
 		if rep.RateLimited && rep.RetryAfter > delay {
 			delay = rep.RetryAfter
 		}
-		if wait(ctx, delay) != nil {
+		if rep.RateLimited {
+			select { // drop a pending trigger: do not hammer a limited API
+			case <-trig:
+			default:
+			}
+			if wait(ctx, delay) != nil {
+				return nil
+			}
+			continue
+		}
+		select {
+		case <-trig: // asked while the run was in progress: run again now
+			continue
+		default:
+		}
+		if !pause(ctx, wait, delay, trig) {
 			return nil
 		}
 	}
+}
+
+// pause waits delay, ending early when a trigger arrives. It reports whether
+// the loop should run again (false when ctx ended or the wait failed).
+func pause(ctx context.Context, wait func(context.Context, time.Duration) error, delay time.Duration, trig <-chan struct{}) bool {
+	wctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var triggered bool
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case <-trig:
+			triggered = true
+			cancel()
+		case <-wctx.Done():
+		}
+	}()
+	err := wait(wctx, delay)
+	cancel()
+	<-done
+	if ctx.Err() != nil {
+		return false
+	}
+	return err == nil || triggered
 }
 
 func sleep(ctx context.Context, d time.Duration) error {
