@@ -23,8 +23,8 @@ The web is read-only, has no sessions and shows every wallet in the database. To
 - About 400 authored changed lines per task is only a planning heuristic.
 
 ## Tasks
-- [x] T1 `internal/sso` copied from eve-auth (+tests), embedded client id, fixed redirect, wallet scopes. Evidence: client/config/jwks/pkce/validate.go and their tests + helpers_test.go copied unchanged (no module-path edits needed); `golang-jwt/jwt/v5 v5.3.1` added; `internal/sso/defaults.go` (`DefaultClientID`, `DefaultRedirectURL`, `WalletScopes()`, `DefaultConfig()`); DefaultConfig tests RED (undefined: DefaultConfig) then GREEN; go build, go vet, gofmt -l clean, go test ./... ok, -race ok, -count=5 ok. Commit: the T1 work-unit commit on `feat/web-login` (hash in the Progress line of the final report). Route: delegated writer.
-- [ ] T2 store v3 migration + API: users, tokens, user_wallets, sessions; migration test from a v2 file.
+- [x] T1 `internal/sso` copied from eve-auth (+tests), embedded client id, fixed redirect, wallet scopes. Evidence: client/config/jwks/pkce/validate.go and their tests + helpers_test.go copied unchanged (no module-path edits needed); `golang-jwt/jwt/v5 v5.3.1` added; `internal/sso/defaults.go` (`DefaultClientID`, `DefaultRedirectURL`, `WalletScopes()`, `DefaultConfig()`); DefaultConfig tests RED (undefined: DefaultConfig) then GREEN; go build, go vet, gofmt -l clean, go test ./... ok, -race ok, -count=5 ok. Commit: 68c9d0c. Native review: assessed medium (go.mod), consent granted, approved, acknowledged (lineage review-d31766c813c7adc9); reviewed boundary now 68c9d0c. Informational follow-ups, none blocking (inherited from eve-auth's copy): R3-001 `internal/sso/jwks.go:26-42` jwksCache holds the mutex during the network fetch and every unknown kid refetches; R3-002 `internal/sso/client.go:71` token() accepts a response without expires_in (ExpiresIn 0) and does not bound negative/huge values; R3-003 `internal/sso/jwks.go:54-56` failure paths of fetch have no tests. Route: delegated writer.
+- [x] T2 store v3 migration + API: users, tokens, user_wallets, sessions; migration test from a v2 file. Evidence: migration 3 in `internal/store/store.go` (+ `wallets`/`latestBalances`/`series` private helpers shared by the scoped reads); `internal/store/users.go` (`UpsertUser`, `SaveToken`/`GetToken`/`Tokens`/`DeleteToken`, `LinkWallet`, `CreateSession`/`SessionUser`/`DeleteSession`/`PurgeExpiredSessions`, `WalletsForUser`/`LatestBalancesForUser`/`SeriesForUser`); `Token.UpdatedAt` is set by the caller (zero means now); foreign keys already enforced per connection via DSN pragma (test proves it on several pooled connections); `internal/store/users_test.go` RED (undefined: SaveToken, then schema v2 / no such table) then GREEN; go build, go vet, gofmt -l clean, go test ./... ok, -race ok, -count=5 ok. Route: delegated writer.
 - [ ] T3 SQLite-backed `TokenSource` (refresh with rotation persisted first) + collector links wallets to users; wiring in `main.go`.
 - [ ] T4 web: `/auth/login`, `/auth/callback`, `/auth/logout`, session middleware, `/api/*` scoped to the session user, 401 when signed out.
 - [ ] T5 UI: signed-out login page, signed-in header with character name and logout, `app.js` handles 401.
@@ -33,10 +33,11 @@ The web is read-only, has no sessions and shows every wallet in the database. To
 ## Routing / test policy
 - Test-first with `go test ./...`; ESI and SSO faked (hand-written fakes, `httptest`, `store.Open(t.TempDir()...)`). One delegated writer per task, one Conventional Commit per task on `feat/web-login`. `go test -race` is now available (gcc installed).
 - Route declaration: T1-T6 each touch 2+ non-trivial files, so each runs as delegated direct (writer trigger). Mapping was done by one read-only explorer.
-- Native review boundary for assessments: main (324ca0c).
+- Native review boundary for assessments: 68c9d0c (T1 reviewed and acknowledged).
 
 ## Progress
-T1 done: SSO package embedded with default wallet configuration.
+T1 done: SSO package embedded with default wallet configuration (68c9d0c).
+T2 done: store schema v3 with users, tokens, per-user wallet links, sessions and user-scoped reads.
 
 ## Next step
-T2.
+T3.

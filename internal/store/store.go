@@ -141,6 +141,37 @@ var migrations = []string{
 	// 2: wallet names. label is chosen by the user, esi_name comes from ESI.
 	`ALTER TABLE wallets ADD COLUMN label TEXT;
 	ALTER TABLE wallets ADD COLUMN esi_name TEXT;`,
+	// 3: users (EVE characters that signed in), their stored refresh tokens,
+	// which wallets each user may see, and login sessions. A token's user_id is
+	// separate from its character_id: today a user owns only their own
+	// character, later they may register more.
+	`CREATE TABLE users (
+		character_id INTEGER PRIMARY KEY,
+		name         TEXT    NOT NULL,
+		created_at   INTEGER NOT NULL
+	);
+	CREATE TABLE tokens (
+		character_id   INTEGER PRIMARY KEY,
+		user_id        INTEGER NOT NULL REFERENCES users(character_id) ON DELETE CASCADE,
+		character_name TEXT    NOT NULL,
+		refresh_token  TEXT    NOT NULL,
+		scopes         TEXT    NOT NULL,
+		updated_at     INTEGER NOT NULL
+	);
+	CREATE INDEX tokens_user ON tokens (user_id);
+	CREATE TABLE user_wallets (
+		user_id   INTEGER NOT NULL REFERENCES users(character_id) ON DELETE CASCADE,
+		wallet_id INTEGER NOT NULL REFERENCES wallets(id) ON DELETE CASCADE,
+		PRIMARY KEY (user_id, wallet_id)
+	);
+	CREATE INDEX user_wallets_wallet ON user_wallets (wallet_id);
+	CREATE TABLE sessions (
+		id_hash    TEXT    PRIMARY KEY,
+		user_id    INTEGER NOT NULL REFERENCES users(character_id) ON DELETE CASCADE,
+		created_at INTEGER NOT NULL,
+		expires_at INTEGER NOT NULL
+	);
+	CREATE INDEX sessions_expires ON sessions (expires_at);`,
 }
 
 // Store is a SQLite-backed wallet history.
@@ -312,9 +343,16 @@ func (s *Store) AddJournalBalance(ctx context.Context, walletID, entryID int64, 
 
 // Wallets lists all wallets ordered by kind, owner id and division.
 func (s *Store) Wallets(ctx context.Context) ([]Wallet, error) {
+	return s.wallets(ctx, "", nil)
+}
+
+// wallets runs the wallet listing with an optional extra join (scope) and its
+// arguments; scope is a fixed SQL fragment, never user input.
+func (s *Store) wallets(ctx context.Context, scope string, args []any) ([]Wallet, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, kind, owner_id, owner_name, division, label, esi_name
-		FROM wallets ORDER BY kind, owner_id, division`)
+		SELECT w.id, w.kind, w.owner_id, w.owner_name, w.division, w.label, w.esi_name
+		FROM wallets w `+scope+`
+		ORDER BY w.kind, w.owner_id, w.division`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list wallets: %w", err)
 	}
@@ -337,14 +375,19 @@ func (s *Store) Wallets(ctx context.Context) ([]Wallet, error) {
 // LatestBalances returns, for every wallet that has at least one balance, its
 // most recent balance across snapshots and journal entries, in Wallets order.
 func (s *Store) LatestBalances(ctx context.Context) ([]WalletBalance, error) {
+	return s.latestBalances(ctx, "", nil)
+}
+
+// latestBalances is LatestBalances with an optional extra join (scope).
+func (s *Store) latestBalances(ctx context.Context, scope string, args []any) ([]WalletBalance, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT w.id, w.kind, w.owner_id, w.owner_name, w.division, w.label, w.esi_name, b.taken_at, b.cents
-		FROM wallets w
+		FROM wallets w `+scope+`
 		JOIN balances b ON b.id = (
 			SELECT id FROM balances
 			WHERE wallet_id = w.id
 			ORDER BY taken_at DESC, id DESC LIMIT 1)
-		ORDER BY w.kind, w.owner_id, w.division`)
+		ORDER BY w.kind, w.owner_id, w.division`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: latest balances: %w", err)
 	}
@@ -369,10 +412,21 @@ func (s *Store) LatestBalances(ctx context.Context) ([]WalletBalance, error) {
 
 // Series returns balance points ordered by wallet id and then time.
 func (s *Store) Series(ctx context.Context, f SeriesFilter) ([]Point, error) {
+	return s.series(ctx, nil, f)
+}
+
+// series is Series, restricted to the wallets linked to userID when it is not
+// nil. The restriction is ANDed with the filter, so a filter naming a wallet
+// the user cannot see yields nothing.
+func (s *Store) series(ctx context.Context, userID *int64, f SeriesFilter) ([]Point, error) {
 	var (
 		where []string
 		args  []any
 	)
+	if userID != nil {
+		where = append(where, "wallet_id IN (SELECT wallet_id FROM user_wallets WHERE user_id = ?)")
+		args = append(args, *userID)
+	}
 	if len(f.WalletIDs) > 0 {
 		marks := strings.TrimSuffix(strings.Repeat("?,", len(f.WalletIDs)), ",")
 		where = append(where, "wallet_id IN ("+marks+")")
