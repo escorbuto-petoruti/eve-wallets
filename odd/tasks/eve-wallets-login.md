@@ -39,6 +39,7 @@ The web is read-only, has no sessions and shows every wallet in the database. To
 T1 done: SSO package embedded with default wallet configuration (68c9d0c).
 T2 done: store schema v3 with users, tokens, per-user wallet links, sessions and user-scoped reads (f6db4bf).
 T3 done: SQLite-backed token source with rotation persisted first, collector links wallets to users, `collect`/`backfill`/`serve` wired to it.
+T3 follow-up: the writer found a role gap in T3 (a second user was linked to an already collected corporation without a role check, so corporation wallet data could leak between characters of the same corporation). Fixed in the follow-up commit `fix(collector): verify the corporation role before linking another user`: the second user's character now proves access with its own token via `CorporationWallets`; a 403 records `missing corporation role` and links nothing.
 
 ## Next step
 T4.

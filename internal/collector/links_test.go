@@ -59,10 +59,11 @@ func TestRunLinksPersonalAndCorporationWallets(t *testing.T) {
 	}
 }
 
-func TestRunTwoUsersSameCorpBothLinkedWithOneFetch(t *testing.T) {
+func TestRunSecondUserWithRoleIsLinkedAfterOwnVerificationFetch(t *testing.T) {
 	a, e := twoUsersOneCorp()
 	s := &fakeStore{}
-	if _, err := newCollector(a, e, s).Run(context.Background()); err != nil {
+	rep, err := newCollector(a, e, s).Run(context.Background())
+	if err != nil {
 		t.Fatal(err)
 	}
 	// Alice personal=1, corp divisions 2,3; Bob personal=4.
@@ -70,8 +71,92 @@ func TestRunTwoUsersSameCorpBothLinkedWithOneFetch(t *testing.T) {
 	if got := sortedLinks(s); !reflect.DeepEqual(got, want) {
 		t.Fatalf("links = %v, want %v", got, want)
 	}
+	// One fetch per user, each with that character's own token; balances are
+	// stored once (3 wallets of Alice and Bob's personal one: 4 snapshots).
+	if got := callsWithPrefix(e, "corpwallets/"); !reflect.DeepEqual(got, []string{"corpwallets/900/1", "corpwallets/900/2"}) {
+		t.Fatalf("corp wallet fetches = %v", got)
+	}
+	if len(s.snaps) != 4 || len(rep.Errors) != 0 {
+		t.Fatalf("snaps = %d, errors = %v", len(s.snaps), rep.Errors)
+	}
+}
+
+func TestRunSecondUserWithoutRoleIsNotLinked(t *testing.T) {
+	a, e := twoUsersOneCorp()
+	e.corpErr = map[string]error{"900/2": forbidden()}
+	s := &fakeStore{}
+	rep, err := newCollector(a, e, s).Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := [][2]int64{{10, 1}, {10, 2}, {10, 3}, {20, 4}}
+	if got := sortedLinks(s); !reflect.DeepEqual(got, want) {
+		t.Fatalf("links = %v, want %v (Bob must not see the corporation)", got, want)
+	}
+	var missing bool
+	for _, sk := range rep.Skipped {
+		if sk.Reason == ReasonMissingRole {
+			missing = true
+		}
+	}
+	if !missing || len(rep.Errors) != 0 {
+		t.Fatalf("skipped = %+v, errors = %+v", rep.Skipped, rep.Errors)
+	}
+}
+
+func TestRunSecondUserVerificationErrorIsReportedAndNotLinked(t *testing.T) {
+	a, e := twoUsersOneCorp()
+	e.corpErr = map[string]error{"900/2": errors.New("esi boom")}
+	s := &fakeStore{}
+	rep, err := newCollector(a, e, s).Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sortedLinks(s); !reflect.DeepEqual(got, [][2]int64{{10, 1}, {10, 2}, {10, 3}, {20, 4}}) {
+		t.Fatalf("links = %v", got)
+	}
+	if len(rep.Errors) != 1 || !strings.Contains(rep.Errors[0].Error(), "esi boom") {
+		t.Fatalf("errors = %+v", rep.Errors)
+	}
+}
+
+func TestRunSecondUserVerificationRateLimitStopsTheRun(t *testing.T) {
+	a, e := twoUsersOneCorp()
+	e.corpErr = map[string]error{"900/2": &esi.RateLimitError{RetryAfter: 30 * time.Second}}
+	s := &fakeStore{}
+	rep, err := newCollector(a, e, s).Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.RateLimited || rep.RetryAfter != 30*time.Second {
+		t.Fatalf("report = %+v", rep)
+	}
+	for _, l := range s.linkCalls {
+		if l[0] == 20 && l[1] != 4 { // wallet 4 is Bob's own personal wallet
+			t.Fatalf("Bob must not be linked to the corporation: %v", s.linkCalls)
+		}
+	}
+}
+
+func TestRunSameUserSecondCharacterCausesNoExtraFetch(t *testing.T) {
+	a, e := twoUsersOneCorp()
+	a.chars[1].UserID = 10 // Bob's character belongs to Alice's user
+	s := &fakeStore{}
+	rep, err := newCollector(a, e, s).Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if n := countCalls(e, "corpwallets/"); n != 1 {
 		t.Fatalf("corp wallet fetches = %d, want 1 (calls %v)", n, e.calls)
+	}
+	var already bool
+	for _, sk := range rep.Skipped {
+		if sk.Reason == ReasonAlreadyCollected {
+			already = true
+		}
+	}
+	if !already {
+		t.Fatalf("skipped = %+v", rep.Skipped)
 	}
 }
 
@@ -104,6 +189,10 @@ func TestRunUserIDZeroMakesNoLinkCalls(t *testing.T) {
 	}
 	if len(s.linkCalls) != 0 || len(rep.Errors) != 0 {
 		t.Fatalf("links = %v, errors = %v", s.linkCalls, rep.Errors)
+	}
+	// Without users there is nothing to verify: the corporation is fetched once.
+	if n := countCalls(e, "corpwallets/"); n != 1 {
+		t.Fatalf("corp wallet fetches = %d, want 1 (calls %v)", n, e.calls)
 	}
 }
 
@@ -158,6 +247,10 @@ func TestBackfillLinksPersonalAndCorporationWallets(t *testing.T) {
 	if n := countCalls(e, "journal/corp/900/1"); n != 1 {
 		t.Fatalf("corp journal fetches = %d, want 1", n)
 	}
+	// Bob proves his role with his own token; journals are not fetched again.
+	if got := callsWithPrefix(e, "corpwallets/"); !reflect.DeepEqual(got, []string{"corpwallets/900/1", "corpwallets/900/2"}) {
+		t.Fatalf("corp wallet fetches = %v", got)
+	}
 }
 
 func TestBackfillUserIDZeroMakesNoLinkCalls(t *testing.T) {
@@ -183,6 +276,16 @@ func TestBackfillLinkFailureIsReported(t *testing.T) {
 	if len(rep.Errors) != 1 || !strings.Contains(rep.Errors[0].Error(), "link boom") {
 		t.Fatalf("errors = %+v", rep.Errors)
 	}
+}
+
+func callsWithPrefix(e *fakeESI, prefix string) []string {
+	var out []string
+	for _, c := range e.calls {
+		if strings.HasPrefix(c, prefix) {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 func countCalls(e *fakeESI, prefix string) int {

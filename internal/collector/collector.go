@@ -125,12 +125,15 @@ type walker struct {
 	// corpWallets are the stored wallet ids per corporation, so a later
 	// character of another user can be linked without a second ESI fetch.
 	corpWallets map[int64][]int64
-	linked      map[[2]int64]bool // {user id, wallet id} pairs already linked
-	named       map[int64]bool    // corporations whose division names were fetched
-	skipped     []Skip
-	errors      []ItemError
-	limited     bool
-	retry       time.Duration
+	// verified holds, per corporation, the users with a character that proved
+	// it can read the corporation wallets in this pass.
+	verified map[int64]map[int64]bool
+	linked   map[[2]int64]bool // {user id, wallet id} pairs already linked
+	named    map[int64]bool    // corporations whose division names were fetched
+	skipped  []Skip
+	errors   []ItemError
+	limited  bool
+	retry    time.Duration
 
 	// personal handles the personal wallet of ch.
 	personal func(ctx context.Context, ch auth.Character, token string) error
@@ -148,6 +151,7 @@ func newWalker(c *Collector) *walker {
 		collected:   make(map[int64]bool),
 		named:       make(map[int64]bool),
 		corpWallets: make(map[int64][]int64),
+		verified:    make(map[int64]map[int64]bool),
 		linked:      make(map[[2]int64]bool),
 	}
 }
@@ -282,11 +286,15 @@ func (w *walker) corp(ctx context.Context, ch auth.Character, getToken func() (s
 	}
 	fallback := fmt.Sprintf(corporationFallbackName, corpID)
 	if w.collected[corpID] {
-		w.skip(fallback, ReasonAlreadyCollected)
-		// The wallets are already stored, but this character's user must see them.
-		for _, id := range w.corpWallets[corpID] {
-			w.link(ctx, fallback, id)
+		if user := ch.UserID; user != 0 && !w.verified[corpID][user] {
+			// The wallets are stored, but another user's character only gets to
+			// see them after proving its own access with its own token.
+			ok, err := w.verifyAccess(ctx, ch, corpID, fallback, getToken)
+			if err != nil || !ok {
+				return err
+			}
 		}
+		w.skip(fallback, ReasonAlreadyCollected)
 		// An earlier character may have lacked the scope or the Director role.
 		return w.corporationNames(ctx, ch, corpID, fallback, getToken)
 	}
@@ -306,6 +314,7 @@ func (w *walker) corp(ctx context.Context, ch auth.Character, getToken func() (s
 		return w.esiFailure(ctx, fallback, err)
 	}
 	w.collected[corpID] = true
+	w.markVerified(corpID, ch.UserID)
 
 	name, nameErr := w.c.deps.ESI.CorporationName(ctx, corpID)
 	if nameErr != nil || name == "" {
@@ -321,6 +330,45 @@ func (w *walker) corp(ctx context.Context, ch auth.Character, getToken func() (s
 		}
 	}
 	return w.corporationNames(ctx, ch, corpID, name, getToken)
+}
+
+// verifyAccess checks, with the character's own token, that it can read the
+// wallets of an already collected corporation, and links its user to the stored
+// wallets when it can. It returns false (and a nil error unless the run must
+// end) when the character was not linked: a 403 is the recorded skip
+// ReasonMissingRole, any other failure an ordinary ESI error.
+func (w *walker) verifyAccess(ctx context.Context, ch auth.Character, corpID int64, owner string, getToken func() (string, bool)) (bool, error) {
+	tok, ok := getToken()
+	if !ok {
+		return false, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	_, err := w.c.deps.ESI.CorporationWallets(ctx, tok, corpID)
+	if esi.IsForbidden(err) {
+		w.skip(owner, ReasonMissingRole)
+		return false, nil
+	}
+	if err != nil {
+		return false, w.esiFailure(ctx, owner, err)
+	}
+	w.markVerified(corpID, ch.UserID)
+	for _, id := range w.corpWallets[corpID] {
+		w.link(ctx, owner, id)
+	}
+	return true, nil
+}
+
+// markVerified notes that a character of the user can read the corporation.
+func (w *walker) markVerified(corpID, userID int64) {
+	if userID == 0 {
+		return
+	}
+	if w.verified[corpID] == nil {
+		w.verified[corpID] = make(map[int64]bool)
+	}
+	w.verified[corpID][userID] = true
 }
 
 // corporationNames refreshes the division names of a corporation once per run,
