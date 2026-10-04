@@ -634,8 +634,8 @@ func TestStatusScopesSkipsAndErrorsToUser(t *testing.T) {
 		t.Errorf("counters = %+v, want taken_at %d, 2 snapshots, 7 journal points", counters, base.Unix())
 	}
 	skipped, errs := view(rec)
-	if len(skipped) != 1 || skipped[0].Owner != "Alice" {
-		t.Errorf("skipped = %+v, want only Alice's own skip", skipped)
+	if len(skipped) != 2 || skipped[0].Owner != "Alice" || skipped[1].Reason != "missing corporation role (other user)" {
+		t.Errorf("skipped = %+v, want Alice's own skip and her own unlinked-corporation skip", skipped)
 	}
 	if len(errs) != 1 || errs[0] != "collection failed: boom" {
 		t.Errorf("errors = %q, want only the run-level error", errs)
@@ -851,5 +851,32 @@ func TestStatusReauthCoversAddedCharacterOfTheUser(t *testing.T) {
 	f.anon.ServeHTTP(rec, bob)
 	if r := view(rec); len(r) != 0 {
 		t.Errorf("user 2 reauth = %+v, want none", r)
+	}
+}
+
+// A corporation skip produced by the user's own character reaches that user
+// even when the corporation is not linked to them yet (the missing role is
+// the reason it is not), and never reaches anyone else.
+func TestStatusShowsUnlinkedCorporationSkipToItsOwner(t *testing.T) {
+	rep := collector.Report{
+		TakenAt: base,
+		Skipped: []collector.Skip{
+			{OwnerKind: store.KindCorporation, OwnerID: 30, Owner: "Unlinked Corp", Reason: "missing corporation role", UserID: 1},
+			{OwnerKind: store.KindCorporation, OwnerID: 31, Owner: "Other Corp", Reason: "missing corporation role", UserID: 2},
+			{OwnerKind: store.KindCorporation, OwnerID: 32, Owner: "Orphan Corp", Reason: "missing corporation role"},
+		},
+	}
+	f := newFixture(t, func() StatusSnapshot { return StatusFromReport(rep) }, false)
+	f.saveChar(t, 1, 1, "Alice")
+	rec := do(f.h, http.MethodGet, "/api/status")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var got struct {
+		Skipped []struct{ Owner string } `json:"skipped"`
+	}
+	decode(t, rec, &got)
+	if len(got.Skipped) != 1 || got.Skipped[0].Owner != "Unlinked Corp" {
+		t.Errorf("skipped = %+v, want only Unlinked Corp", got.Skipped)
 	}
 }
