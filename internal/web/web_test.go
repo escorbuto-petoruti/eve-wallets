@@ -33,11 +33,41 @@ type fixture struct {
 	sso            *fakeSSO
 	now            atomic.Int64 // unix seconds
 	logins         []int64
+	forgot         []forgotten
 	aliceCookie    string
 	mu             sync.Mutex
 }
 
 func (f *fixture) clock() time.Time { return time.Unix(f.now.Load(), 0).UTC() }
+
+// forgotten records an OnTokenSaved call and the refresh token stored at that
+// moment: the hook must run after the save.
+type forgotten struct {
+	id      int64
+	refresh string
+}
+
+func (f *fixture) forgotten() []forgotten {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]forgotten(nil), f.forgot...)
+}
+
+func (f *fixture) onTokenSaved(id int64) {
+	tok, _, _ := f.st.GetToken(context.Background(), id)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.forgot = append(f.forgot, forgotten{id, tok.RefreshToken})
+}
+
+// wantForgotten fails unless exactly one cached token was dropped, for id,
+// after the new refresh token was stored.
+func (f *fixture) wantForgotten(t *testing.T, id int64, refresh string) {
+	t.Helper()
+	if got := f.forgotten(); len(got) != 1 || got[0].id != id || got[0].refresh != refresh {
+		t.Errorf("OnTokenSaved calls = %+v, want one for %d after storing %q", got, id, refresh)
+	}
+}
 
 func (f *fixture) loggedIn() []int64 {
 	f.mu.Lock()
@@ -79,7 +109,7 @@ func newFixture(t *testing.T, status func() StatusSnapshot, seed bool) *fixture 
 	t.Cleanup(func() { _ = st.Close() })
 	f := &fixture{st: st, dbPath: path, sso: newFakeSSO()}
 	f.now.Store(base.Unix())
-	f.anon = New(Deps{Store: st, Status: status, SSO: f.sso, Now: f.clock, OnLogin: func(id int64) {
+	f.anon = New(Deps{Store: st, Status: status, SSO: f.sso, Now: f.clock, OnTokenSaved: f.onTokenSaved, OnLogin: func(id int64) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.logins = append(f.logins, id)

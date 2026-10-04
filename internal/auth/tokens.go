@@ -132,33 +132,47 @@ func (s *StoreTokens) Token(ctx context.Context, characterID int64) (string, err
 	}
 	cs.access = ""
 
-	tok, ok, err := s.store.GetToken(ctx, characterID)
-	if err != nil {
-		return "", fmt.Errorf("auth: token for character %d: %w", characterID, err)
-	}
-	if !ok {
-		return "", fmt.Errorf("auth: token for character %d: character is not registered", characterID)
-	}
-
-	ts, err := s.sso.Refresh(ctx, tok.RefreshToken)
-	if err != nil {
-		return "", refreshError(tok, err)
-	}
-	if ts.RefreshToken != "" && ts.RefreshToken != tok.RefreshToken {
-		next := tok
-		next.RefreshToken = ts.RefreshToken
-		next.UpdatedAt = s.now()
-		cs.access, cs.expires = ts.AccessToken, s.now().Add(ts.ExpiresIn)
-		if err := s.persist(ctx, next, tok.RefreshToken, ts.AccessToken); err != nil {
-			// SSO already invalidated the old refresh token: keep the rotated one
-			// (and the access token) in memory to retry the save on the next call,
-			// but do not hand out the access token before it is persisted.
-			cs.pending = &next
-			return "", err
+	// A sign-in that saves new credentials while a refresh is in flight makes
+	// the refreshed result stale; it is dropped and the refresh redone once with
+	// the stored token.
+	for attempt := 0; ; attempt++ {
+		tok, ok, err := s.store.GetToken(ctx, characterID)
+		if err != nil {
+			return "", fmt.Errorf("auth: token for character %d: %w", characterID, err)
 		}
+		if !ok {
+			return "", fmt.Errorf("auth: token for character %d: character is not registered", characterID)
+		}
+
+		ts, err := s.sso.Refresh(ctx, tok.RefreshToken)
+		if err != nil {
+			return "", refreshError(tok, err)
+		}
+		if ts.RefreshToken != "" && ts.RefreshToken != tok.RefreshToken {
+			cur, ok, err := s.store.GetToken(ctx, characterID)
+			if err == nil && ok && cur.RefreshToken != tok.RefreshToken {
+				// Re-login during the refresh: saving the rotated token would
+				// overwrite the new credentials.
+				if attempt == 0 {
+					continue
+				}
+				return "", fmt.Errorf("auth: token for character %d: credentials changed during refresh, try again", characterID)
+			}
+			next := tok
+			next.RefreshToken = ts.RefreshToken
+			next.UpdatedAt = s.now()
+			cs.access, cs.expires = ts.AccessToken, s.now().Add(ts.ExpiresIn)
+			if err := s.persist(ctx, next, tok.RefreshToken, ts.AccessToken); err != nil {
+				// SSO already invalidated the old refresh token: keep the rotated one
+				// (and the access token) in memory to retry the save on the next call,
+				// but do not hand out the access token before it is persisted.
+				cs.pending = &next
+				return "", err
+			}
+		}
+		cs.access, cs.expires = ts.AccessToken, s.now().Add(ts.ExpiresIn)
+		return cs.access, nil
 	}
-	cs.access, cs.expires = ts.AccessToken, s.now().Add(ts.ExpiresIn)
-	return cs.access, nil
 }
 
 // persist saves t. A failure is scrubbed of t's refresh token and extra secrets.
@@ -207,4 +221,19 @@ func scrub(msg string, secrets ...string) string {
 		msg = strings.ToValidUTF8(msg[:maxErrDetail], "") + "..."
 	}
 	return msg
+}
+
+// Forget discards the cached access token and any unsaved rotated token of a
+// character. Call it after a sign-in has saved new credentials for the
+// character: the cached access token carries the old scopes, and a pending
+// rotated token would overwrite the new refresh token. The next Token call
+// refreshes with the stored refresh token.
+//
+// It waits for a refresh in flight (they share the character's lock); that
+// refresh notices the changed stored row and is redone, see Token.
+func (s *StoreTokens) Forget(characterID int64) {
+	cs := s.state(characterID)
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	cs.access, cs.expires, cs.pending = "", time.Time{}, nil
 }

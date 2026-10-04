@@ -228,6 +228,7 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 		Name: sessionCookie, Value: value, Path: "/", MaxAge: int(sessionTTL / time.Second),
 		HttpOnly: true, SameSite: http.SameSiteLaxMode, // no Secure: plain http on localhost
 	})
+	s.tokenSaved(claims.CharacterID)
 	if s.deps.OnLogin != nil {
 		s.deps.OnLogin(claims.CharacterID)
 	}

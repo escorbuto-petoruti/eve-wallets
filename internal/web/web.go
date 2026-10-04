@@ -35,6 +35,9 @@ type Deps struct {
 	Now func() time.Time
 	// OnLogin runs after a successful sign-in with the user id. It may be nil.
 	OnLogin func(userID int64)
+	// OnTokenSaved runs right after a sign-in saved new credentials for a
+	// character, before OnLogin. It may be nil.
+	OnTokenSaved func(characterID int64)
 	// AllowedPort is the port of the listener: a Host header may carry it (or no
 	// port) next to a loopback name. Any other port is refused.
 	AllowedPort string
@@ -44,6 +47,14 @@ type server struct {
 	deps  Deps
 	flows *loginFlows
 	moves *pendingMoves
+}
+
+// tokenSaved tells the owner of the token cache that a sign-in stored new
+// credentials for the character.
+func (s *server) tokenSaved(characterID int64) {
+	if s.deps.OnTokenSaved != nil {
+		s.deps.OnTokenSaved(characterID)
+	}
 }
 
 func (s *server) now() time.Time { return s.deps.Now() }

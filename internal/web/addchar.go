@@ -179,6 +179,7 @@ func (s *server) finishAdd(w http.ResponseWriter, r *http.Request, flow loginFlo
 		http.Redirect(w, r, "/auth/confirm-move", http.StatusSeeOther)
 		return
 	}
+	s.tokenSaved(claims.CharacterID)
 	if s.deps.OnLogin != nil {
 		s.deps.OnLogin(claims.CharacterID)
 	}
@@ -269,6 +270,7 @@ func (s *server) moveCharacter(w http.ResponseWriter, r *http.Request) {
 			"The character was moved, but its new sign-in could not be saved. The previous token is kept; add the character again.")
 		return
 	}
+	s.tokenSaved(pm.characterID)
 	if s.deps.OnLogin != nil {
 		s.deps.OnLogin(pm.characterID)
 	}

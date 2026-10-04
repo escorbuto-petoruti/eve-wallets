@@ -137,3 +137,19 @@ func TestServeAPIsNeedASession(t *testing.T) {
 	cancel()
 	<-done
 }
+
+// The collector's token cache is the one a sign-in must drop: a character that
+// signs in again would otherwise keep an access token with its old scopes.
+func TestServeLoginForgetsTheCachedAccessToken(t *testing.T) {
+	h := newHarness(t, map[string]string{"HOME": "/home/u"})
+	base, cancel, done := startServe(t, h, "--every", "1h", "--no-backfill")
+	waitFor(t, "first collection", func() bool { return h.tokens.listCalls() >= 1 })
+	signIn(t, base)
+	if got := h.tokens.forgotten(); len(got) != 1 || got[0] != 1 {
+		t.Errorf("forgotten = %v, want [1]", got)
+	}
+	cancel()
+	if code := <-done; code != 0 {
+		t.Errorf("exit = %d; stderr = %q", code, h.err.String())
+	}
+}

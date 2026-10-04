@@ -313,14 +313,21 @@ func runServe(ctx context.Context, args []string, d deps) int {
 		mu     sync.Mutex
 		status web.StatusSnapshot
 	)
-	var onLogin func(int64) // stays nil with --no-collect
+	var onLogin func(int64)      // stays nil with --no-collect
+	var onTokenSaved func(int64) // likewise: without a collector there is no token cache
 	loopCtx, stopLoop := context.WithCancel(ctx)
 	defer stopLoop()
 	var loopDone sync.WaitGroup
 	if !*noCollect {
+		tokens := d.newTokens(st)
+		// A sign-in stores new credentials and scopes; the access token cached
+		// for that character carries the old ones.
+		if f, ok := tokens.(interface{ Forget(int64) }); ok {
+			onTokenSaved = f.Forget
+		}
 		loop := &scheduler.Loop{
 			Every: *every,
-			Run:   newCycle(buildCollector(d, st, d.newTokens(st)), !*noBackfill),
+			Run:   newCycle(buildCollector(d, st, tokens), !*noBackfill),
 			OnResult: func(rep collector.Report, err error) {
 				snap := web.StatusFromReport(rep)
 				if err != nil && ctx.Err() == nil {
@@ -352,9 +359,10 @@ func runServe(ctx context.Context, args []string, d deps) int {
 				defer mu.Unlock()
 				return status
 			},
-			SSO:         d.newSSO(),
-			OnLogin:     onLogin,
-			AllowedPort: listenPort(ln.Addr().String()),
+			SSO:          d.newSSO(),
+			OnLogin:      onLogin,
+			OnTokenSaved: onTokenSaved,
+			AllowedPort:  listenPort(ln.Addr().String()),
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
