@@ -36,6 +36,7 @@ Phase 1 gives every character that signs in its own user (`UserID == CharacterID
 - Delivery: forecast about 700 authored changed lines, above the 400 budget. Strategy chosen by the owner: `stacked-to-main`. Slices: PR1 = T1+T2 (store and login by an attached character), PR2 = T3 (add-character flow and move), PR3 = T4+T5 (status, UI, docs). Each PR bases on the previous slice branch; push and PR creation stay the owner's decision.
 
 ## Progress
+- Live check by the owner on the running service built from `feat/add-characters-ui` (binary replaced, previous kept as `~/.local/bin/eve-wallets.prev`): header with characters and the Add character button, adding a character, moving one from another user and signing in with an attached character all worked. Not exercised: concurrent flows, pending-move expiry, rate-limit behavior after a move.
 - Design closed with the owner; mapping done (callback hardcodes `UserID = CharacterID` at `internal/web/auth.go:180`, `canSee` uses `u.CharacterID` at `internal/web/web.go:323`).
 - Engram mirror: `odd/eve-wallets-characters/tasks`.
 
@@ -49,4 +50,4 @@ Phase 1 gives every character that signs in its own user (`UserID == CharacterID
 - Per-character scopes would need `AuthURL` to take scopes.
 
 ## Next step
-Deploy and the owner's browser check; then PR3.
+Push and open PR3 (the owner decides).

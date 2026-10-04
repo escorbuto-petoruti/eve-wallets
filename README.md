@@ -165,7 +165,7 @@ The tests use fakes (ESI and SSO) or a temporary SQLite database; `go test`, `go
 Not verified:
 
 - The real EVE SSO flow end to end: the redirect `http://localhost:8088/auth/callback` has to be registered for the embedded client id, and that has not been checked, nor has a real login been done.
-- The add and move character flow (SSO round trip as a second character, the confirmation page, the characters in the header) in a real browser and against the real EVE SSO; it is covered by fakes and structural tests only.
+- The add and move character flow was tried by the owner in a real browser against the real EVE SSO (header, adding a character, moving one from another user, signing in with an attached character); it is covered by fakes and structural tests, not by an automated browser test.
 - The page (sign-in screen, header, sign out, session expiry, collecting state) in a real browser; its JavaScript has only structural tests and a syntax check.
 - The migration of the real v2 database to v3 (it is covered by a test on a generated v2 file).
 - The `serve` cycle that backfills the journal every time (and `--no-backfill`) is covered by fakes only; it has not been run against the real ESI.
