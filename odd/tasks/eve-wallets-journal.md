@@ -35,3 +35,4 @@ Route: delegated writer (writer trigger: 2+ non-trivial files per task); no nati
 - Checks at the end: gofmt -l . empty; go vet ./... clean; go test ./... ok; go test -count=5 store/collector/web ok; node --check app.js ok.
 - Follow-up 566928d: Movements view pages with Previous / Next (client-side cursor stack, replaces rows, "Page N") instead of Load more; no API change. Route: delegated writer. RED: ui_test lacked Previous/Next/Page/cur.stack/movements-pager; then GREEN. Not verified: no browser run.
 - Not verified: no browser run of the UI, no run against the real ESI or the real database.
+- Follow-up 3bd9a83: Movements table in a fixed-height scroll region with sticky header, fixed column layout and truncated descriptions (full text in title), pager no longer moves. Route: delegated writer. RED: ui_test missing new strings; then GREEN.
