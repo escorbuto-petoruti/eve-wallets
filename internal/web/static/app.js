@@ -8,7 +8,7 @@
   var TOTAL_COLOR = "#e5e5e5";
   var MAX_IDS = 50; // keep in sync with the server cap
 
-  var state = { wallets: [], selected: new Set(), range: 2592000, chart: null, token: 0 };
+  var state = { wallets: [], range: 2592000, sections: [] };
 
   var $ = function (id) { return document.getElementById(id); };
 
@@ -54,9 +54,8 @@
   function showSignedOut(message) {
     session.signedIn = false;
     session.epoch++;
-    state.token++;
     stopPolling();
-    if (state.chart) { state.chart.destroy(); state.chart = null; }
+    clearSections();
     $("signed-in").hidden = true;
     $("user-bar").hidden = true;
     $("session-message").textContent = message || "";
@@ -86,48 +85,110 @@
     return w.owner_name + " (" + (w.kind === "character" ? "character" : "corporation") + ")";
   }
 
-  function renderPicker() {
-    var picker = $("picker");
-    picker.replaceChildren();
-    var groups = new Map();
-    state.wallets.forEach(function (w) {
-      var key = w.kind + ":" + w.owner_id;
-      if (!groups.has(key)) { groups.set(key, []); }
-      groups.get(key).push(w);
+  // groupWallets returns one group for all characters and one per corporation
+  // (by owner_id). Groups only exist when they hold wallets.
+  function groupWallets(wallets) {
+    var chars = [];
+    var corps = new Map();
+    wallets.forEach(function (w) {
+      if (w.kind === "character") { chars.push(w); return; }
+      if (!corps.has(w.owner_id)) { corps.set(w.owner_id, { key: "corp-" + w.owner_id, title: w.owner_name, wallets: [] }); }
+      corps.get(w.owner_id).wallets.push(w);
     });
-    groups.forEach(function (list) {
-      var fs = el("fieldset");
-      fs.appendChild(el("legend", ownerLabel(list[0])));
-      var box = el("div", undefined, "wallets");
-      list.forEach(function (w) {
-        var label = el("label", undefined, "check");
-        var cb = document.createElement("input");
-        cb.type = "checkbox";
-        cb.checked = state.selected.has(w.id);
-        cb.addEventListener("change", function () {
-          if (cb.checked) { state.selected.add(w.id); } else { state.selected.delete(w.id); }
-          refreshChart();
-        });
-        label.appendChild(cb);
-        label.appendChild(document.createTextNode(" " + walletLabel(w)));
-        box.appendChild(label);
-      });
-      fs.appendChild(box);
-      picker.appendChild(fs);
-    });
+    var groups = [];
+    if (chars.length) { groups.push({ key: "characters", title: "Characters", wallets: chars }); }
+    corps.forEach(function (g) { groups.push(g); });
+    return groups;
   }
 
-  function renderLatest() {
-    var body = $("latest").tBodies[0];
-    body.replaceChildren();
-    state.wallets.forEach(function (w) {
+  function clearSections() {
+    state.sections.forEach(function (s) {
+      s.token++; // drop late responses
+      if (s.chart) { s.chart.destroy(); s.chart = null; }
+    });
+    state.sections = [];
+    $("sections").replaceChildren();
+  }
+
+  function buildSection(group, idx) {
+    var section = { group: group, selected: new Set(), chart: null, token: 0, totalBox: null, note: null, canvas: null };
+    var card = el("section", undefined, "card");
+    var titleId = "section-title-" + idx;
+    var title = el("h2", group.title);
+    title.id = titleId;
+    card.setAttribute("aria-labelledby", titleId);
+    card.appendChild(title);
+
+    var fs = el("fieldset");
+    fs.appendChild(el("legend", "Wallets in " + group.title, "sr-only"));
+    var box = el("div", undefined, "wallets");
+    group.wallets.slice(0, MAX_IDS).forEach(function (w) { section.selected.add(w.id); });
+    group.wallets.forEach(function (w) {
+      var label = el("label", undefined, "check");
+      var cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = section.selected.has(w.id);
+      cb.addEventListener("change", function () {
+        if (cb.checked) { section.selected.add(w.id); } else { section.selected.delete(w.id); }
+        refreshChart(section);
+      });
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(" " + walletLabel(w)));
+      box.appendChild(label);
+    });
+    fs.appendChild(box);
+    card.appendChild(fs);
+
+    var totalLabel = el("label", undefined, "check");
+    section.totalBox = document.createElement("input");
+    section.totalBox.type = "checkbox";
+    section.totalBox.setAttribute("aria-label", "Total for " + group.title);
+    section.totalBox.addEventListener("change", function () { refreshChart(section); });
+    totalLabel.appendChild(section.totalBox);
+    totalLabel.appendChild(document.createTextNode(" Total"));
+    card.appendChild(totalLabel);
+
+    section.note = el("p", "", "muted");
+    section.note.setAttribute("role", "status");
+    card.appendChild(section.note);
+    var chartBox = el("div", undefined, "chart-box");
+    section.canvas = document.createElement("canvas");
+    section.canvas.setAttribute("role", "img");
+    section.canvas.setAttribute("aria-label", "Balance history for " + group.title);
+    chartBox.appendChild(section.canvas);
+    card.appendChild(chartBox);
+
+    card.appendChild(el("h3", "Latest balances"));
+    var scroll = el("div", undefined, "scroll");
+    var table = document.createElement("table");
+    var head = document.createElement("tr");
+    [["Wallet"], ["Balance (ISK)", "num"], ["As of"]].forEach(function (c) { head.appendChild(el("th", c[0], c[1])); });
+    var thead = document.createElement("thead");
+    thead.appendChild(head);
+    table.appendChild(thead);
+    var tbody = document.createElement("tbody");
+    group.wallets.forEach(function (w) {
       if (w.cents === null || w.cents === undefined) { return; }
       var tr = document.createElement("tr");
-      tr.appendChild(el("td", ownerLabel(w)));
       tr.appendChild(el("td", walletLabel(w)));
       tr.appendChild(el("td", formatISK(w.cents), "num"));
       tr.appendChild(el("td", formatTime(w.balance_time)));
-      body.appendChild(tr);
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    scroll.appendChild(table);
+    card.appendChild(scroll);
+
+    $("sections").appendChild(card);
+    return section;
+  }
+
+  function renderSections() {
+    clearSections();
+    groupWallets(state.wallets).forEach(function (g, i) {
+      var s = buildSection(g, i);
+      state.sections.push(s);
+      refreshChart(s);
     });
   }
 
@@ -164,9 +225,9 @@
     return getComputedStyle(document.body).color || TOTAL_COLOR;
   }
 
-  function drawChart(resp) {
+  function drawChart(section, resp) {
     var datasets = resp.series.map(function (s, i) {
-      var w = state.wallets.find(function (x) { return x.id === s.wallet_id; });
+      var w = section.group.wallets.find(function (x) { return x.id === s.wallet_id; });
       return {
         label: w ? walletLabel(w) : "Wallet " + s.wallet_id,
         data: s.points.map(function (p) { return { x: p.t * 1000, y: p.cents / 100 }; }),
@@ -175,7 +236,7 @@
         borderWidth: 2, pointRadius: 2, tension: 0, stepped: "before"
       };
     });
-    if ($("total").checked && resp.total) {
+    if (section.totalBox.checked && resp.total) {
       datasets.push({
         label: "Total",
         data: resp.total.map(function (p) { return { x: p.t * 1000, y: p.cents / 100 }; }),
@@ -184,8 +245,8 @@
       });
     }
     var c = themeColors();
-    if (state.chart) { state.chart.destroy(); }
-    state.chart = new Chart($("chart"), {
+    if (section.chart) { section.chart.destroy(); }
+    section.chart = new Chart(section.canvas, {
       type: "line",
       data: { datasets: datasets },
       options: {
@@ -216,16 +277,18 @@
     });
   }
 
-  function refreshChart() {
-    var ids = Array.from(state.selected);
-    var note = $("chart-note");
+  function refreshChart(section) {
+    var ids = Array.from(section.selected);
+    var note = section.note;
     note.textContent = "";
     if (ids.length === 0) {
-      if (state.chart) { state.chart.destroy(); state.chart = null; }
+      section.token++;
+      if (section.chart) { section.chart.destroy(); section.chart = null; }
       note.textContent = "Select at least one wallet.";
       return;
     }
     if (ids.length > MAX_IDS) {
+      section.token++;
       note.textContent = "Too many wallets selected (maximum " + MAX_IDS + ").";
       return;
     }
@@ -234,15 +297,15 @@
     if (state.range > 0) {
       q.set("from", new Date(Date.now() - state.range * 1000).toISOString());
     }
-    if ($("total").checked) { q.set("total", "1"); }
-    var token = ++state.token;
+    if (section.totalBox.checked) { q.set("total", "1"); }
+    var token = ++section.token;
     getJSON("/api/series?" + q.toString()).then(function (resp) {
-      if (token !== state.token) { return; }
-      drawChart(resp);
+      if (token !== section.token) { return; }
+      drawChart(section, resp);
       var any = resp.series.some(function (s) { return s.points.length > 0; });
       note.textContent = any ? "" : "No data points in this range.";
     }).catch(function (err) {
-      if (!err.unauthorized && token === state.token) { note.textContent = err.message; }
+      if (!err.unauthorized && token === section.token) { note.textContent = err.message; }
     });
   }
 
@@ -253,14 +316,13 @@
       b.classList.toggle("active", on);
       b.setAttribute("aria-pressed", on ? "true" : "false");
     });
-    refreshChart();
+    state.sections.forEach(refreshChart);
   }
 
   function init() {
     document.querySelectorAll("#ranges button").forEach(function (b) {
       b.addEventListener("click", function () { setRange(b); });
     });
-    $("total").addEventListener("change", refreshChart);
 
     getJSON("/api/me").then(function (me) {
       showSignedIn(me);
@@ -291,12 +353,8 @@
       if (hasData) {
         $("collecting").hidden = true;
         $("empty").hidden = true;
-        state.selected = new Set();
-        state.wallets.slice(0, MAX_IDS).forEach(function (w) { state.selected.add(w.id); });
-        ["controls", "chart-card", "latest-card"].forEach(function (id) { $(id).hidden = false; });
-        renderPicker();
-        renderLatest();
-        refreshChart();
+        $("controls").hidden = false;
+        renderSections();
         return;
       }
       $("collecting").hidden = false;
