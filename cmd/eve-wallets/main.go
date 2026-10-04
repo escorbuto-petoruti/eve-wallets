@@ -42,6 +42,7 @@ const (
 
 const usage = `Usage:
   eve-wallets version
+  eve-wallets update [--check] [--force]
   eve-wallets collect [--db PATH]
   eve-wallets backfill [--db PATH]
   eve-wallets serve [--addr 127.0.0.1:8088] [--db PATH] [--every 30m] [--no-collect] [--no-backfill]
@@ -51,6 +52,7 @@ const usage = `Usage:
 
 Commands:
   version  print the version
+  update   replace the binary with the latest GitHub release (linux and macOS)
   collect  take one snapshot of every wallet and print a summary
   backfill store the last 30 days of history from the wallet journals
   serve    serve the charts on a loopback address; each cycle takes a snapshot and backfills the journal
@@ -59,6 +61,7 @@ Commands:
 
 Environment:
   EVE_WALLETS_DB         database path (the --db flag wins)
+  EVE_WALLETS_UPDATE_API GitHub API base URL for update (tests)
   EVE_WALLETS_CLIENT_ID  client id of your own EVE application (callback stays http://localhost:8088/auth/callback)
 `
 
@@ -107,6 +110,8 @@ func run(ctx context.Context, args []string, d deps) int {
 	case "version", "--version":
 		fmt.Fprintf(d.stdout, "eve-wallets %s\n", version)
 		return 0
+	case "update":
+		return runUpdate(ctx, args[1:], d)
 	case "collect":
 		return runCollect(ctx, args[1:], d)
 	case "backfill":
