@@ -317,14 +317,10 @@ func TestTwoCharactersSameCorporationCollectedOnce(t *testing.T) {
 	if len(s.snaps) != 1 {
 		t.Fatalf("snaps = %d, want 1", len(s.snaps))
 	}
-	var already bool
 	for _, sk := range rep.Skipped {
-		if sk.Reason == "already collected" {
-			already = true
+		if sk.OwnerKind == store.KindCorporation {
+			t.Fatalf("skipped = %+v, a second character of a collected corporation is not a skip", rep.Skipped)
 		}
-	}
-	if !already {
-		t.Fatalf("skipped = %+v", rep.Skipped)
 	}
 	for _, c := range e.calls {
 		if c == "corpwallets/900/2" {

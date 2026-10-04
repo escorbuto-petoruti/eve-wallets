@@ -24,8 +24,7 @@ const (
 	ScopeCorporationNames  = "esi-corporations.read_divisions.v1"
 
 	ReasonMissingRole       = "missing corporation role"
-	ReasonMissingDirector   = "missing Director role"
-	ReasonAlreadyCollected  = "already collected"
+	ReasonMissingDirector   = "cannot read division names (needs the Director role); default names are shown"
 	reasonMissingScopeFmt   = "missing scope %s"
 	corporationFallbackName = "Corp %d"
 )
@@ -145,6 +144,10 @@ type walker struct {
 	verified map[int64]map[int64]bool
 	linked   map[[2]int64]bool // {user id, wallet id} pairs already linked
 	named    map[int64]bool    // corporations whose division names were fetched
+	// corpName is the real name of each corporation resolved in this pass; a
+	// corporation without an entry is labelled with the fallback.
+	corpName map[int64]string
+	seenSkip map[skipKey]bool // skips already recorded in this pass
 	skipped  []Skip
 	errors   []ItemError
 	limited  bool
@@ -165,10 +168,30 @@ func newWalker(c *Collector) *walker {
 		c:           c,
 		collected:   make(map[int64]bool),
 		named:       make(map[int64]bool),
+		corpName:    make(map[int64]string),
+		seenSkip:    make(map[skipKey]bool),
 		corpWallets: make(map[int64][]int64),
 		verified:    make(map[int64]map[int64]bool),
 		linked:      make(map[[2]int64]bool),
 	}
+}
+
+// skipKey identifies a skip within a pass. The user is part of it so that
+// every user whose character hit the problem still sees it.
+type skipKey struct {
+	kind   store.Kind
+	id     int64
+	reason string
+	user   int64
+}
+
+// corpLabel returns the real name of a corporation when it is known, else the
+// fallback label.
+func (w *walker) corpLabel(corpID int64) string {
+	if n := w.corpName[corpID]; n != "" {
+		return n
+	}
+	return fmt.Sprintf(corporationFallbackName, corpID)
 }
 
 // errStop is an internal signal that the run must end now.
@@ -299,19 +322,18 @@ func (w *walker) corp(ctx context.Context, ch auth.Character, getToken func() (s
 	if err != nil {
 		return w.esiFailure(ctx, store.KindCharacter, ch.ID, ch.Name, err)
 	}
-	fallback := fmt.Sprintf(corporationFallbackName, corpID)
 	if w.collected[corpID] {
+		label := w.corpLabel(corpID)
 		if user := ch.UserID; user != 0 && !w.verified[corpID][user] {
 			// The wallets are stored, but another user's character only gets to
 			// see them after proving its own access with its own token.
-			ok, err := w.verifyAccess(ctx, ch, corpID, fallback, getToken)
+			ok, err := w.verifyAccess(ctx, ch, corpID, label, getToken)
 			if err != nil || !ok {
 				return err
 			}
 		}
-		w.skip(store.KindCorporation, corpID, fallback, ReasonAlreadyCollected)
 		// An earlier character may have lacked the scope or the Director role.
-		return w.corporationNames(ctx, ch, corpID, fallback, getToken)
+		return w.corporationNames(ctx, ch, corpID, label, getToken)
 	}
 	tok, ok := getToken()
 	if !ok {
@@ -322,18 +344,20 @@ func (w *walker) corp(ctx context.Context, ch auth.Character, getToken func() (s
 	}
 	divisions, err := w.c.deps.ESI.CorporationWallets(ctx, tok, corpID)
 	if esi.IsForbidden(err) {
-		w.skip(store.KindCorporation, corpID, fallback, ReasonMissingRole)
+		w.skip(store.KindCorporation, corpID, w.corpLabel(corpID), ReasonMissingRole)
 		return nil
 	}
 	if err != nil {
-		return w.esiFailure(ctx, store.KindCorporation, corpID, fallback, err)
+		return w.esiFailure(ctx, store.KindCorporation, corpID, w.corpLabel(corpID), err)
 	}
 	w.collected[corpID] = true
 	w.markVerified(corpID, ch.UserID)
 
 	name, nameErr := w.c.deps.ESI.CorporationName(ctx, corpID)
 	if nameErr != nil || name == "" {
-		name = fallback
+		name = w.corpLabel(corpID)
+	} else {
+		w.corpName[corpID] = name
 	}
 	if err := w.corporation(ctx, corpID, name, tok, divisions); err != nil {
 		return err
@@ -475,7 +499,14 @@ func (w *walker) link(ctx context.Context, kind store.Kind, ownerID int64, label
 	w.linked[[2]int64{user, walletID}] = true
 }
 
+// skip records one skip per (owner, reason, user) in a pass: further
+// characters of the same user hitting the same problem add nothing.
 func (w *walker) skip(kind store.Kind, ownerID int64, owner, reason string) {
+	key := skipKey{kind: kind, id: ownerID, reason: reason, user: w.cur.UserID}
+	if w.seenSkip[key] {
+		return
+	}
+	w.seenSkip[key] = true
 	w.skipped = append(w.skipped, Skip{OwnerKind: kind, OwnerID: ownerID, Owner: owner, Reason: reason, UserID: w.cur.UserID})
 }
 

@@ -100,7 +100,7 @@ func TestNamesForbiddenIsSkipThenSecondCharacterSucceeds(t *testing.T) {
 			denied++
 		}
 	}
-	if denied != 1 || ReasonMissingDirector != "missing Director role" || len(rep.Errors) != 0 {
+	if denied != 1 || ReasonMissingDirector != "cannot read division names (needs the Director role); default names are shown" || len(rep.Errors) != 0 {
 		t.Fatalf("skipped = %+v errors = %+v", rep.Skipped, rep.Errors)
 	}
 }
@@ -120,7 +120,7 @@ func TestNamesForbiddenForEveryone(t *testing.T) {
 	if s.esiNames[2] != "Keep me" || len(rep.Errors) != 0 || len(rep.Snapshots) != 2 {
 		t.Fatalf("names = %v, report = %+v", namesByDivision(s), rep)
 	}
-	if !slices.ContainsFunc(rep.Skipped, func(k Skip) bool { return k.Reason == "missing Director role" }) {
+	if !slices.ContainsFunc(rep.Skipped, func(k Skip) bool { return k.Reason == ReasonMissingDirector }) {
 		t.Fatalf("skipped = %+v", rep.Skipped)
 	}
 }
@@ -264,5 +264,89 @@ func TestBackfillNeverRequestsNames(t *testing.T) {
 	}
 	if s.nameCalls != 0 {
 		t.Fatalf("nameCalls = %d", s.nameCalls)
+	}
+}
+
+func directorOf(id int64, name string, user int64) auth.Character {
+	c := director(id, name)
+	c.UserID = user
+	return c
+}
+
+func skipsOf(rep Report, reason string) []Skip {
+	var out []Skip
+	for _, k := range rep.Skipped {
+		if k.Reason == reason {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+func TestSkipsUseRealCorporationNameAndAreDeduplicated(t *testing.T) {
+	// Two characters of one user, both denied the division names: one skip,
+	// under the real name, and no "already collected" noise.
+	a := &fakeAuth{chars: []auth.Character{directorOf(1, "Alice", 10), directorOf(2, "Bob", 10)}}
+	e := &fakeESI{
+		corpOf:     map[int64]int64{1: 900, 2: 900},
+		corpNames:  map[int64]string{900: "Acme"},
+		corpWallet: map[string][]esi.DivisionBalance{"900/1": {{Division: 1, Cents: 1}}},
+		divErr:     map[string]error{"900/1": forbidden(), "900/2": forbidden()},
+	}
+	rep, err := newCollector(a, e, &fakeStore{}).Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Skipped) != 1 {
+		t.Fatalf("skipped = %+v, want exactly one", rep.Skipped)
+	}
+	if k := rep.Skipped[0]; k.Reason != ReasonMissingDirector || k.Owner != "Acme" || k.OwnerID != 900 {
+		t.Fatalf("skip = %+v", k)
+	}
+}
+
+func TestSkipsStayVisibleToEachUser(t *testing.T) {
+	// Two users denied the same thing: the dedupe must not hide it from one.
+	a := &fakeAuth{chars: []auth.Character{directorOf(1, "Alice", 10), directorOf(2, "Bob", 20)}}
+	e := &fakeESI{
+		corpOf:     map[int64]int64{1: 900, 2: 900},
+		corpNames:  map[int64]string{900: "Acme"},
+		corpWallet: map[string][]esi.DivisionBalance{"900/1": {{Division: 1, Cents: 1}}, "900/2": {{Division: 1, Cents: 1}}},
+		divErr:     map[string]error{"900/1": forbidden(), "900/2": forbidden()},
+	}
+	rep, err := newCollector(a, e, &fakeStore{}).Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := skipsOf(rep, ReasonMissingDirector)
+	if len(got) != 2 || got[0].UserID != 10 || got[1].UserID != 20 {
+		t.Fatalf("skips = %+v, want one per user (10 and 20)", rep.Skipped)
+	}
+	for _, k := range got {
+		if k.Owner != "Acme" {
+			t.Errorf("skip = %+v, want owner Acme", k)
+		}
+	}
+}
+
+func TestVerifyFailureAndErrorsUseRealCorporationName(t *testing.T) {
+	a, e := twoUsersOneCorp()
+	e.corpErr = map[string]error{"900/2": forbidden()}
+	rep, err := newCollector(a, e, &fakeStore{}).Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Skipped) != 1 || rep.Skipped[0].Owner != "Acme" {
+		t.Fatalf("skipped = %+v, want one skip under Acme", rep.Skipped)
+	}
+
+	a, e = twoUsersOneCorp()
+	e.corpErr = map[string]error{"900/2": errors.New("esi boom")}
+	rep, err = newCollector(a, e, &fakeStore{}).Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Errors) != 1 || rep.Errors[0].Owner != "Acme" {
+		t.Fatalf("errors = %+v, want one under Acme", rep.Errors)
 	}
 }

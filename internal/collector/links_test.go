@@ -152,14 +152,8 @@ func TestRunSameUserSecondCharacterCausesNoExtraFetch(t *testing.T) {
 	if n := countCalls(e, "corpwallets/"); n != 1 {
 		t.Fatalf("corp wallet fetches = %d, want 1 (calls %v)", n, e.calls)
 	}
-	var already bool
-	for _, sk := range rep.Skipped {
-		if sk.Reason == ReasonAlreadyCollected {
-			already = true
-		}
-	}
-	if !already {
-		t.Fatalf("skipped = %+v", rep.Skipped)
+	if len(rep.Skipped) != 0 {
+		t.Fatalf("skipped = %+v, want none", rep.Skipped)
 	}
 }
 
