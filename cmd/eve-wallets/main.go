@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -40,6 +41,8 @@ const (
 )
 
 const usage = `Usage:
+  eve-wallets version
+  eve-wallets update [--check] [--force]
   eve-wallets collect [--db PATH]
   eve-wallets backfill [--db PATH]
   eve-wallets serve [--addr 127.0.0.1:8088] [--db PATH] [--every 30m] [--no-collect] [--no-backfill]
@@ -48,6 +51,8 @@ const usage = `Usage:
   eve-wallets label [--db PATH] --clear <wallet-id>
 
 Commands:
+  version  print the version
+  update   replace the binary with the latest GitHub release (linux and macOS)
   collect  take one snapshot of every wallet and print a summary
   backfill store the last 30 days of history from the wallet journals
   serve    serve the charts on a loopback address; each cycle takes a snapshot and backfills the journal
@@ -55,7 +60,9 @@ Commands:
   label    set (or --clear) the name shown for a wallet; flags go before the id
 
 Environment:
-  EVE_WALLETS_DB  database path (the --db flag wins)
+  EVE_WALLETS_DB         database path (the --db flag wins)
+  EVE_WALLETS_UPDATE_API GitHub API base URL for update (tests)
+  EVE_WALLETS_CLIENT_ID  client id of your own EVE application (callback stays http://localhost:8088/auth/callback)
 `
 
 // deps are the collaborators of run, replaced by fakes in tests.
@@ -81,7 +88,7 @@ func main() {
 			return esi.New(esi.Options{UserAgent: ua})
 		},
 		listen: net.Listen,
-		newSSO: func() web.SSO { return sso.NewClient(sso.DefaultConfig()) },
+		newSSO: func() web.SSO { return sso.NewClient(ssoConfig(os.Getenv)) },
 	})
 	stop()
 	os.Exit(code)
@@ -100,6 +107,11 @@ func run(ctx context.Context, args []string, d deps) int {
 	case "help":
 		fmt.Fprint(d.stderr, usage)
 		return 2
+	case "version", "--version":
+		fmt.Fprintf(d.stdout, "eve-wallets %s\n", version)
+		return 0
+	case "update":
+		return runUpdate(ctx, args[1:], d)
 	case "collect":
 		return runCollect(ctx, args[1:], d)
 	case "backfill":
@@ -137,7 +149,18 @@ func newFlagSet(name string, d deps) *flag.FlagSet {
 // newStoreTokens builds the production token source: the refresh tokens kept
 // in st, exchanged at EVE SSO with the embedded client.
 func newStoreTokens(st *store.Store) auth.TokenSource {
-	return auth.NewStoreTokens(st, sso.NewClient(sso.DefaultConfig()), nil)
+	return auth.NewStoreTokens(st, sso.NewClient(ssoConfig(os.Getenv)), nil)
+}
+
+// ssoConfig is the embedded SSO configuration. EVE_WALLETS_CLIENT_ID replaces
+// the client id with the one of your own EVE application; the callback stays
+// http://localhost:8088/auth/callback, so that application must register it.
+func ssoConfig(getenv func(string) string) sso.Config {
+	cfg := sso.DefaultConfig()
+	if id := strings.TrimSpace(getenv("EVE_WALLETS_CLIENT_ID")); id != "" {
+		cfg.ClientID = id
+	}
+	return cfg
 }
 
 // noCharactersMsg is shown by the one-shot commands when nobody has signed in.
