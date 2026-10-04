@@ -139,7 +139,7 @@ func decode(t *testing.T, rec *httptest.ResponseRecorder, v any) {
 func assertSecurityHeaders(t *testing.T, rec *httptest.ResponseRecorder, target string) {
 	t.Helper()
 	want := map[string]string{
-		"Content-Security-Policy": "default-src 'self'",
+		"Content-Security-Policy": "default-src 'self'; img-src 'self' https://images.evetech.net",
 		"X-Content-Type-Options":  "nosniff",
 		"Referrer-Policy":         "no-referrer",
 	}
@@ -510,7 +510,8 @@ func TestAppFilesHaveNoExternalURLs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		s := string(b)
+		// The only allowed external reference is the EVE image server (img-src).
+		s := strings.ReplaceAll(string(b), "https://images.evetech.net/", "")
 		if strings.Contains(s, "http://") || strings.Contains(s, "https://") || strings.Contains(s, "//cdn") {
 			t.Errorf("%s references an external URL", name)
 		}

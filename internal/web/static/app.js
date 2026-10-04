@@ -19,6 +19,26 @@
     return n;
   }
 
+  // eveImage returns a decorative <img> for a character portrait or a
+  // corporation logo, or null when the id is not a positive safe integer.
+  // The URL is built only from that number. A failed load removes the element.
+  function eveImage(kind, id, px) {
+    if (!Number.isSafeInteger(id) || !(id > 0)) { return null; }
+    var url = kind === "character"
+      ? "https://images.evetech.net/characters/" + id + "/portrait?size=64"
+      : "https://images.evetech.net/corporations/" + id + "/logo?size=64";
+    var img = document.createElement("img");
+    img.className = "eve-img";
+    img.setAttribute("alt", "");
+    img.setAttribute("width", String(px));
+    img.setAttribute("height", String(px));
+    img.setAttribute("loading", "lazy");
+    img.setAttribute("decoding", "async");
+    img.src = url;
+    img.addEventListener("error", function () { img.remove(); });
+    return img;
+  }
+
   var POLL_FIRST_MS = 5000;
   var POLL_MAX_MS = 30000;
   var POLL_MAX_TRIES = 40;
@@ -92,7 +112,7 @@
     var corps = new Map();
     wallets.forEach(function (w) {
       if (w.kind === "character") { chars.push(w); return; }
-      if (!corps.has(w.owner_id)) { corps.set(w.owner_id, { key: "corp-" + w.owner_id, title: w.owner_name, wallets: [] }); }
+      if (!corps.has(w.owner_id)) { corps.set(w.owner_id, { key: "corp-" + w.owner_id, title: w.owner_name, corpId: w.owner_id, wallets: [] }); }
       corps.get(w.owner_id).wallets.push(w);
     });
     var groups = [];
@@ -130,8 +150,13 @@
     tab.tabIndex = -1;
     tab.addEventListener("click", function () { activateSection(section); });
     section.tab = tab;
+    var tabLogo = eveImage("corporation", group.corpId, 24);
+    if (tabLogo) { tab.insertBefore(tabLogo, tab.firstChild); }
     $("tabs").appendChild(tab);
-    card.appendChild(el("h2", group.title));
+    var title = el("h2", group.title);
+    var titleLogo = eveImage("corporation", group.corpId, 32);
+    if (titleLogo) { title.insertBefore(titleLogo, title.firstChild); }
+    card.appendChild(title);
 
     var fs = el("fieldset");
     fs.appendChild(el("legend", "Wallets in " + group.title, "sr-only"));
@@ -147,6 +172,8 @@
         refreshChart(section);
       });
       label.appendChild(cb);
+      var pic = w.kind === "character" ? eveImage("character", w.owner_id, 32) : null;
+      if (pic) { label.appendChild(pic); }
       label.appendChild(document.createTextNode(" " + walletLabel(w)));
       box.appendChild(label);
     });
@@ -184,7 +211,11 @@
     group.wallets.forEach(function (w) {
       if (w.cents === null || w.cents === undefined) { return; }
       var tr = document.createElement("tr");
-      tr.appendChild(el("td", walletLabel(w)));
+      var nameCell = el("td");
+      var rowPic = w.kind === "character" ? eveImage("character", w.owner_id, 32) : null;
+      if (rowPic) { nameCell.appendChild(rowPic); }
+      nameCell.appendChild(document.createTextNode(" " + walletLabel(w)));
+      tr.appendChild(nameCell);
       tr.appendChild(el("td", formatISK(w.cents), "num"));
       tr.appendChild(el("td", formatTime(w.balance_time)));
       tbody.appendChild(tr);
