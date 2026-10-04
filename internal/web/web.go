@@ -68,21 +68,34 @@ func New(deps Deps) http.Handler {
 	mux.HandleFunc("POST /auth/logout", s.logout)
 	mux.HandleFunc("/api/me", requireUser(s.me))
 	mux.HandleFunc("/api/wallets", requireUser(s.wallets))
+	mux.HandleFunc("POST /api/wallets/{id}/label", requireUser(s.renameWallet))
 	mux.HandleFunc("/api/series", requireUser(s.series))
 	mux.HandleFunc("/api/status", requireUser(s.status))
 	return s.guard(s.withSession(mux))
 }
 
-// postPaths are the only paths that accept a POST.
+// postPaths are the only fixed paths that accept a POST.
 var postPaths = map[string]bool{
 	"/auth/logout":         true,
 	"/auth/move-character": true,
 	"/auth/cancel-move":    true,
 }
 
+// walletLabelPath matches /api/wallets/{id}/label, the one POST route with a
+// path parameter. The handler validates the id.
+func walletLabelPath(p string) bool {
+	rest, ok := strings.CutPrefix(p, "/api/wallets/")
+	if !ok {
+		return false
+	}
+	id, ok := strings.CutSuffix(rest, "/label")
+	return ok && id != "" && !strings.Contains(id, "/")
+}
+
 // guard sets the hardening headers on every response, refuses a Host that is not
 // the local app (DNS rebinding) and allows only GET and HEAD, except for the
-// POSTs of /auth/logout, /auth/move-character and /auth/cancel-move.
+// POSTs of /auth/logout, /auth/move-character, /auth/cancel-move and
+// /api/wallets/{id}/label.
 func (s *server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
@@ -93,7 +106,7 @@ func (s *server) guard(next http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, "forbidden host")
 			return
 		}
-		post := r.Method == http.MethodPost && postPaths[r.URL.Path]
+		post := r.Method == http.MethodPost && (postPaths[r.URL.Path] || walletLabelPath(r.URL.Path))
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && !post {
 			h.Set("Allow", "GET, HEAD")
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
