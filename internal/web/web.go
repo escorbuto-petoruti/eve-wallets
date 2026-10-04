@@ -358,9 +358,18 @@ func (s *server) status(w http.ResponseWriter, r *http.Request, u store.User) {
 		}
 	}
 	errs := []string{}
+	reauth := []ReauthItem{}
+	seenReauth := map[int64]bool{}
 	for _, it := range st.Errors {
 		if it.OwnerKind == "" || canSee(it.OwnerKind, it.OwnerID) {
 			errs = append(errs, it.Message)
+		}
+		// A reauth entry names a character, so it is listed only for the user
+		// who owns that character, whatever the error's own scope (a run-level
+		// error must not leak another user's character).
+		if it.Reauth != nil && own[it.Reauth.CharacterID] && !seenReauth[it.Reauth.CharacterID] {
+			seenReauth[it.Reauth.CharacterID] = true
+			reauth = append(reauth, *it.Reauth)
 		}
 	}
 	var takenAt *int64
@@ -373,6 +382,7 @@ func (s *server) status(w http.ResponseWriter, r *http.Request, u store.User) {
 		"journal_points":      st.JournalPoints,
 		"skipped":             skipped,
 		"errors":              errs,
+		"reauth":              reauth,
 		"rate_limited":        st.RateLimited,
 		"retry_after_seconds": st.RetryAfterSeconds,
 	})

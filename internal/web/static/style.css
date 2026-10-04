@@ -78,6 +78,9 @@ th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid var(-
 .num { text-align: right; font-variant-numeric: tabular-nums; }
 .warn { color: var(--warn); }
 .bad { color: var(--bad); }
+.reauth-notice { border: 2px solid var(--warn); border-radius: 6px; padding: .5rem .75rem; margin: .5rem 0; }
+.reauth-notice p { margin: .25rem 0; }
+.reauth-notice strong { font-weight: 700; }
 ul { margin: .25rem 0; padding-left: 1.25rem; }
 @media (max-width: 480px) {
   .chart-box { height: 260px; }

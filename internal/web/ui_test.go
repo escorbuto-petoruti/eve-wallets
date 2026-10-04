@@ -193,3 +193,31 @@ func TestAppDestroysSectionChartsOnSignOut(t *testing.T) {
 		t.Error("app.js must destroy every section chart when sections are cleared")
 	}
 }
+
+// The re-authentication notice: built in JS from status.reauth with
+// textContent, linking to the add-character flow, without a second plain
+// error line for the same character.
+func TestAppRendersReauthNotice(t *testing.T) {
+	js := asset(t, "app.js")
+	for _, want := range []string{
+		"s.reauth",
+		"/auth/add-character",
+		": sign in again",
+		"Sign in again",
+		"EVE login screen",
+		"reauth-notice",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("app.js lacks %q", want)
+		}
+	}
+	if strings.Contains(js, "innerHTML") {
+		t.Error("app.js must never use innerHTML")
+	}
+	if !strings.Contains(js, `el("a", "Sign in again", "button")`) {
+		t.Error("the sign-in link must be an <a class=button>")
+	}
+	if !strings.Contains(asset(t, "style.css"), ".reauth-notice") {
+		t.Error("style.css lacks .reauth-notice")
+	}
+}
