@@ -8,7 +8,7 @@
   var TOTAL_COLOR = "#e9f0f6";
   var MAX_IDS = 50; // keep in sync with the server cap
 
-  var state = { wallets: [], range: 2592000, sections: [], active: null };
+  var state = { wallets: [], range: 2592000, sections: [], active: null, loyaltyToken: 0 };
 
   var $ = function (id) { return document.getElementById(id); };
 
@@ -90,6 +90,7 @@
     session.epoch++;
     stopPolling();
     clearSections();
+    clearLoyalty();
     $("signed-in").hidden = true;
     $("user-bar").hidden = true;
     $("session-message").textContent = message || "";
@@ -268,6 +269,99 @@
     var pick = state.sections.find(function (s) { return s.group.key === prev; }) || state.sections[0];
     $("tabs").hidden = state.sections.length < 2;
     activateSection(pick);
+  }
+
+  var lpFmt = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
+
+  // clearLoyalty empties the loyalty view and bumps its token so a late
+  // response is dropped.
+  function clearLoyalty() {
+    state.loyaltyToken++;
+    $("loyalty").replaceChildren();
+    $("loyalty-status").textContent = "";
+    $("loyalty-status").className = "muted";
+    $("loyalty-card").hidden = true;
+  }
+
+  function setLoyaltyStatus(text, cls) {
+    var box = $("loyalty-status");
+    box.textContent = text;
+    box.className = cls;
+  }
+
+  // renderLoyalty shows, per character, a table of corporations (sorted as the
+  // API returns them) or, when its token lacks the scope, a sign-in notice.
+  function renderLoyalty(resp) {
+    var box = $("loyalty");
+    box.replaceChildren();
+    var chars = resp.characters || [];
+    if (!chars.length) {
+      setLoyaltyStatus("No characters registered.", "muted");
+      return;
+    }
+    var latest = 0;
+    chars.forEach(function (c) {
+      var wrap = el("div", undefined, "loyalty-character");
+      var head = el("h3", c.character_name);
+      var portrait = eveImage("character", c.character_id, 24);
+      if (portrait) { head.insertBefore(portrait, head.firstChild); }
+      wrap.appendChild(head);
+      var corps = c.corporations || [];
+      if (c.needs_reauth) {
+        var note = el("div", undefined, "warn reauth-notice");
+        note.setAttribute("role", "alert");
+        note.appendChild(el("p", c.character_name + ": sign in again to show loyalty points", "warn"));
+        var link = el("a", "Sign in again", "button");
+        link.href = "/auth/add-character";
+        note.appendChild(link);
+        note.appendChild(el("p", "On the EVE login screen, choose " + c.character_name + ".", "muted"));
+        wrap.appendChild(note);
+      } else if (!corps.length) {
+        wrap.appendChild(el("p", "No loyalty points.", "muted"));
+      } else {
+        if (c.fetched_at && c.fetched_at > latest) { latest = c.fetched_at; }
+        var scroll = el("div", undefined, "scroll");
+        var table = el("table", undefined, "loyalty-table");
+        var thead = document.createElement("thead");
+        var hr = document.createElement("tr");
+        hr.appendChild(el("th", "Corporation"));
+        hr.appendChild(el("th", "Points", "num"));
+        thead.appendChild(hr);
+        table.appendChild(thead);
+        var tbody = document.createElement("tbody");
+        corps.forEach(function (k) {
+          var tr = document.createElement("tr");
+          var name = el("td");
+          var cell = el("div", undefined, "loyalty-corp");
+          var logo = eveImage("corporation", k.corporation_id, 24);
+          if (logo) { cell.appendChild(logo); }
+          cell.appendChild(el("span", k.name));
+          name.appendChild(cell);
+          tr.appendChild(name);
+          tr.appendChild(el("td", lpFmt.format(k.points), "num"));
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        scroll.appendChild(table);
+        wrap.appendChild(scroll);
+      }
+      box.appendChild(wrap);
+    });
+    setLoyaltyStatus(latest ? "Last updated " + formatTime(latest) + "." : "", "muted");
+  }
+
+  function loadLoyalty() {
+    var token = ++state.loyaltyToken;
+    $("loyalty-card").hidden = false;
+    setLoyaltyStatus("Loading loyalty points…", "muted");
+    getJSON("/api/loyalty").then(function (resp) {
+      if (token === state.loyaltyToken) { renderLoyalty(resp); }
+    }).catch(function (err) {
+      if (!err.unauthorized && token === state.loyaltyToken) {
+        $("loyalty").replaceChildren();
+        setLoyaltyStatus("Cannot load loyalty points: " + err.message, "bad");
+      }
+    });
   }
 
   function renderStatus(s) {
@@ -783,6 +877,7 @@
 
     getJSON("/api/me").then(function (me) {
       showSignedIn(me);
+      loadLoyalty();
       loadWallets(0, POLL_FIRST_MS);
     }).catch(function (err) {
       if (err.unauthorized) { return; } // the signed-out view is already shown
@@ -812,6 +907,8 @@
         $("empty").hidden = true;
         $("controls").hidden = false;
         renderSections();
+        // The first collection finished while polling: the stored points are new.
+        if (tries > 0) { loadLoyalty(); }
         return;
       }
       $("collecting").hidden = false;

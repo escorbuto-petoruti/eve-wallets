@@ -176,3 +176,10 @@ a { color: var(--accent); }
   .movements-table th:nth-child(1), .movements-table td:nth-child(1) { width: 8.5rem; }
   .movements-table th:nth-child(3), .movements-table td:nth-child(3) { width: 7.5rem; }
 }
+
+/* Loyalty points: one block per character with a corporation table. */
+.loyalty-character { margin: .5rem 0 1rem; }
+.loyalty-character h3 { display: flex; align-items: center; margin: .75rem 0 .25rem; overflow-wrap: anywhere; }
+.loyalty-table { max-width: 40rem; }
+.loyalty-corp { display: flex; align-items: center; overflow-wrap: anywhere; }
+.loyalty-table th.num { text-align: right; }
