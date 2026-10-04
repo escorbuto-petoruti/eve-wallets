@@ -82,14 +82,20 @@ done
 BASE="http://127.0.0.1:$(cat "$WORK/port")"
 
 fail=0
+# Drop every variable install.ps1 reads so the caller's environment cannot leak into a case.
+clean_env() {
+	env -u VERSION -u INSTALL_DIR -u LOCALAPPDATA -u EVE_WALLETS_RELEASE_BASE \
+		-u EVE_WALLETS_TEST_ARCH -u EVE_WALLETS_TEST_FAIL_REPLACE "$@"
+}
 # run <name> <expected rc> <expected output substring> [ENV=VALUE ...]
 run() {
 	name=$1 want_rc=$2 want_out=$3
 	shift 3
-	rc=0
-	out=$(env "$@" EVE_WALLETS_RELEASE_BASE="$BASE" pwsh -NoProfile -NonInteractive -File "$ROOT/install.ps1" 2>&1) || rc=$?
-	if [ "$rc" = "$want_rc" ] && printf '%s' "$out" | grep -q -- "$want_out"; then
+	rc=0 last_ok=0
+	out=$(clean_env "$@" EVE_WALLETS_RELEASE_BASE="$BASE" pwsh -NoProfile -NonInteractive -File "$ROOT/install.ps1" 2>&1) || rc=$?
+	if [ "$rc" = "$want_rc" ] && printf '%s' "$out" | grep -qF -- "$want_out"; then
 		echo "ok   $name"
+		last_ok=1
 	else
 		echo "FAIL $name (rc=$rc, want $want_rc, want output ~ '$want_out')"
 		printf '%s\n' "$out" | sed 's/^/     /'
@@ -99,10 +105,12 @@ run() {
 
 D="$WORK/inst"
 run "latest release installs" 0 "installed" INSTALL_DIR="$D"
-[ -f "$D/eve-wallets.exe" ] || { echo "FAIL exe missing"; fail=1; }
+if [ "$last_ok" = 1 ]; then
+	[ -f "$D/eve-wallets.exe" ] || { echo "FAIL exe missing"; fail=1; }
+fi
 run "reinstall keeps previous binary" 0 "checksum ok" INSTALL_DIR="$D" VERSION=9.9.9
 [ -f "$D/eve-wallets.exe.bak-prev" ] || { echo "FAIL bak-prev missing"; fail=1; }
-ls "$D"/.eve-wallets.new.* >/dev/null 2>&1 && { echo "FAIL staged file left behind"; fail=1; }
+ls "$D"/.eve-wallets.* >/dev/null 2>&1 && { echo "FAIL temp file left behind"; fail=1; }
 
 D2="$WORK/inst-mismatch"
 run "checksum mismatch aborts" 1 "checksum mismatch" INSTALL_DIR="$D2" VERSION=v8.8.8
@@ -126,7 +134,7 @@ ls "$D4"/.eve-wallets.* >/dev/null 2>&1 && { echo "FAIL temp file left behind"; 
 
 # iex mode must not kill the host shell and must still report the error.
 rc=0
-out=$(env INSTALL_DIR="$WORK/inst-iex" VERSION=v7.7.7 EVE_WALLETS_RELEASE_BASE="$BASE" \
+out=$(clean_env INSTALL_DIR="$WORK/inst-iex" VERSION=v7.7.7 EVE_WALLETS_RELEASE_BASE="$BASE" \
 	pwsh -NoProfile -NonInteractive -Command "Get-Content -Raw '$ROOT/install.ps1' | Invoke-Expression; 'host shell alive'" 2>&1) || rc=$?
 if printf '%s' "$out" | grep -q "download failed" && printf '%s' "$out" | grep -q "host shell alive"; then
 	echo "ok   iex mode survives a failure"
