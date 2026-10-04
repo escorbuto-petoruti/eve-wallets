@@ -33,4 +33,5 @@ Route: delegated writer (writer trigger: 2+ non-trivial files per task); no nati
 - T2 b6bf952: `GET /api/wallets/{id}/journal` (limit 1-200 default 50, keyset cursor `<unix>-<id>`, ref_type, RFC 3339 from/to, 400 on bad params, 404 unknown or foreign wallet). RED: all new endpoint tests got 404 before the route existed; then GREEN.
 - T3 6be506a: Movements view (button per wallet panel, table, type select, date range, Load more, aria-live status, focus management, Escape/Close), CSS classes, README. RED: ui_test `TestAppHasMovementsView` failed on missing strings; then GREEN.
 - Checks at the end: gofmt -l . empty; go vet ./... clean; go test ./... ok; go test -count=5 store/collector/web ok; node --check app.js ok.
+- Follow-up 566928d: Movements view pages with Previous / Next (client-side cursor stack, replaces rows, "Page N") instead of Load more; no API change. Route: delegated writer. RED: ui_test lacked Previous/Next/Page/cur.stack/movements-pager; then GREEN. Not verified: no browser run.
 - Not verified: no browser run of the UI, no run against the real ESI or the real database.
