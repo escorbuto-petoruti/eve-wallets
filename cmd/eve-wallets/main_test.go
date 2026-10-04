@@ -29,7 +29,21 @@ type fakeTokens struct {
 	chars   []auth.Character
 	listErr error
 	calls   int
+	forgot  []int64
 	mu      sync.Mutex
+}
+
+// Forget records the characters whose cached token was dropped.
+func (f *fakeTokens) Forget(id int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.forgot = append(f.forgot, id)
+}
+
+func (f *fakeTokens) forgotten() []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int64(nil), f.forgot...)
 }
 
 func (f *fakeTokens) Characters(context.Context) ([]auth.Character, error) {

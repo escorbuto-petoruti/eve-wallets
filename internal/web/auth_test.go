@@ -320,6 +320,7 @@ func TestCallbackSuccess(t *testing.T) {
 	if got := f.loggedIn(); len(got) != 1 || got[0] != 42 {
 		t.Errorf("OnLogin calls = %v, want [42]", got)
 	}
+	f.wantForgotten(t, 42, "refresh-tok-1")
 
 	me := request(f.anon, http.MethodGet, "/api/me", func(r *http.Request) { r.AddCookie(sc) })
 	if me.Code != http.StatusOK || strings.TrimSpace(me.Body.String()) != `{"character_id":42,"name":"Bob","characters":[{"character_id":42,"name":"Bob"}]}` {
@@ -422,6 +423,9 @@ func TestFailedTokenSaveForAnAttachedCharacterCreatesNoSession(t *testing.T) {
 	}
 	if len(f.loggedIn()) != 0 {
 		t.Error("OnLogin ran after a failed token save")
+	}
+	if got := f.forgotten(); len(got) != 0 {
+		t.Errorf("OnTokenSaved ran after a failed save: %+v", got)
 	}
 }
 

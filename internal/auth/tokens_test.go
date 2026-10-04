@@ -467,3 +467,145 @@ func TestStoreTokensGetTokenFailure(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// funcRefresher answers each Refresh with a caller-supplied function.
+type funcRefresher func(ctx context.Context, refreshToken string) (sso.TokenSet, error)
+
+func (f funcRefresher) Refresh(ctx context.Context, rt string) (sso.TokenSet, error) {
+	return f(ctx, rt)
+}
+
+func TestForgetDropsCachedAccessToken(t *testing.T) {
+	st := newFakeTokenStore(nil, aliceToken())
+	var seen []string
+	rf := funcRefresher(func(_ context.Context, rt string) (sso.TokenSet, error) {
+		seen = append(seen, rt)
+		return sso.TokenSet{AccessToken: "access-for-" + rt, ExpiresIn: 20 * time.Minute}, nil
+	})
+	src, _ := newSource(t, st, rf)
+	ctx := context.Background()
+
+	if got, err := src.Token(ctx, 1); err != nil || got != "access-for-"+oldRefresh {
+		t.Fatalf("first Token = %q, %v", got, err)
+	}
+	// The person signs in again: a new refresh token is stored.
+	if err := st.SaveToken(ctx, store.Token{CharacterID: 1, UserID: 1, CharacterName: "Alice", RefreshToken: newRefresh, Scopes: []string{"s1", "s2", "s3"}}); err != nil {
+		t.Fatal(err)
+	}
+	src.Forget(1)
+	got, err := src.Token(ctx, 1)
+	if err != nil || got != "access-for-"+newRefresh {
+		t.Fatalf("Token after Forget = %q, %v; want the new access token", got, err)
+	}
+	if want := []string{oldRefresh, newRefresh}; !reflect.DeepEqual(seen, want) {
+		t.Errorf("refresh tokens presented = %v, want %v", seen, want)
+	}
+}
+
+func TestForgetKeepsOtherCharactersCached(t *testing.T) {
+	bob := store.Token{CharacterID: 2, UserID: 2, CharacterName: "Bob", RefreshToken: "bob-refresh"}
+	st := newFakeTokenStore(nil, aliceToken(), bob)
+	rf := &fakeRefresher{set: sso.TokenSet{AccessToken: accessTok, ExpiresIn: 20 * time.Minute}}
+	src, _ := newSource(t, st, rf)
+	ctx := context.Background()
+	for _, id := range []int64{1, 2} {
+		if _, err := src.Token(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	src.Forget(1)
+	src.Forget(99) // never seen: harmless
+	if _, err := src.Token(ctx, 2); err != nil {
+		t.Fatal(err)
+	}
+	if n := rf.calls.Load(); n != 2 {
+		t.Errorf("refresh calls = %d, want 2 (Bob stays cached)", n)
+	}
+	if _, err := src.Token(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if n := rf.calls.Load(); n != 3 {
+		t.Errorf("refresh calls = %d, want 3 (Alice refreshed again)", n)
+	}
+}
+
+func TestForgetDropsPendingRotatedToken(t *testing.T) {
+	st := newFakeTokenStore(nil, aliceToken())
+	rf := &fakeRefresher{set: sso.TokenSet{AccessToken: accessTok, RefreshToken: "rotated-old-scopes", ExpiresIn: 20 * time.Minute}}
+	src, _ := newSource(t, st, rf)
+	ctx := context.Background()
+	st.saveErr = errors.New("disk full")
+	if _, err := src.Token(ctx, 1); err == nil {
+		t.Fatal("want persist error")
+	}
+	// Re-login stores new credentials; the pending old-scope token must not
+	// overwrite them.
+	st.saveErr = nil
+	fresh := store.Token{CharacterID: 1, UserID: 1, CharacterName: "Alice", RefreshToken: newRefresh}
+	if err := st.SaveToken(ctx, fresh); err != nil {
+		t.Fatal(err)
+	}
+	src.Forget(1)
+	rf.set = sso.TokenSet{AccessToken: "fresh-access", ExpiresIn: 20 * time.Minute}
+	got, err := src.Token(ctx, 1)
+	if err != nil || got != "fresh-access" {
+		t.Fatalf("Token = %q, %v", got, err)
+	}
+	if tok, _, _ := st.GetToken(ctx, 1); tok.RefreshToken != newRefresh {
+		t.Errorf("stored refresh token = %q, want the re-login one", tok.RefreshToken)
+	}
+}
+
+// A refresh that started with the old refresh token must not overwrite the
+// row a re-login saved while the refresh was in flight, nor cache its access
+// token.
+func TestForgetDuringInFlightRefresh(t *testing.T) {
+	st := newFakeTokenStore(nil, aliceToken())
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var seen []string
+	var mu sync.Mutex
+	rf := funcRefresher(func(_ context.Context, rt string) (sso.TokenSet, error) {
+		mu.Lock()
+		seen = append(seen, rt)
+		first := len(seen) == 1
+		mu.Unlock()
+		if first {
+			close(started)
+			<-release
+			return sso.TokenSet{AccessToken: "stale-access", RefreshToken: "rotated-old-scopes", ExpiresIn: 20 * time.Minute}, nil
+		}
+		return sso.TokenSet{AccessToken: "fresh-access", ExpiresIn: 20 * time.Minute}, nil
+	})
+	src, _ := newSource(t, st, rf)
+	ctx := context.Background()
+
+	type res struct {
+		tok string
+		err error
+	}
+	done := make(chan res, 1)
+	go func() { tok, err := src.Token(ctx, 1); done <- res{tok, err} }()
+	<-started
+	if err := st.SaveToken(ctx, store.Token{CharacterID: 1, UserID: 1, CharacterName: "Alice", RefreshToken: newRefresh}); err != nil {
+		t.Fatal(err)
+	}
+	forgot := make(chan struct{})
+	go func() { src.Forget(1); close(forgot) }()
+	close(release)
+	r := <-done
+	<-forgot
+	if r.err != nil {
+		t.Fatalf("Token: %v", r.err)
+	}
+	if r.tok == "stale-access" {
+		t.Error("the stale access token was handed out")
+	}
+	if tok, _, _ := st.GetToken(ctx, 1); tok.RefreshToken != newRefresh {
+		t.Errorf("stored refresh token = %q, want the re-login one", tok.RefreshToken)
+	}
+	got, err := src.Token(ctx, 1)
+	if err != nil || got != "fresh-access" {
+		t.Errorf("Token after = %q, %v; want fresh-access", got, err)
+	}
+}

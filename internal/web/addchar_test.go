@@ -96,6 +96,7 @@ func TestAddCharacterAttachesToTheSessionUser(t *testing.T) {
 	if got := f.loggedIn(); len(got) != 1 || got[0] != 42 {
 		t.Errorf("OnLogin calls = %v, want [42]", got)
 	}
+	f.wantForgotten(t, 42, "refresh-tok-1")
 }
 
 func TestAddCharacterAlreadyOwnedRefreshesTheToken(t *testing.T) {
@@ -118,6 +119,7 @@ func TestAddCharacterAlreadyOwnedRefreshesTheToken(t *testing.T) {
 	if got := f.loggedIn(); len(got) != 1 || got[0] != 42 {
 		t.Errorf("OnLogin calls = %v, want [42]", got)
 	}
+	f.wantForgotten(t, 42, "refresh-tok-1")
 }
 
 func TestAddCharacterRefusesADifferentSessionUser(t *testing.T) {
@@ -202,6 +204,9 @@ func TestAddCharacterOfAnotherUsersCharacterWritesNothing(t *testing.T) {
 	if len(f.loggedIn()) != 0 {
 		t.Error("OnLogin ran before the move was confirmed")
 	}
+	if got := f.forgotten(); len(got) != 0 {
+		t.Errorf("OnTokenSaved ran before the move was confirmed: %+v", got)
+	}
 	if strings.Contains(rec.Body.String(), "refresh-tok-1") {
 		t.Error("the refresh token reached the page")
 	}
@@ -224,6 +229,9 @@ func TestFailedTokenSaveOnAddTriggersNothing(t *testing.T) {
 	}
 	if len(f.loggedIn()) != 0 {
 		t.Error("OnLogin ran after a failed save")
+	}
+	if got := f.forgotten(); len(got) != 0 {
+		t.Errorf("OnTokenSaved ran after a failed save: %+v", got)
 	}
 }
 
@@ -447,6 +455,7 @@ func TestMoveCharacterMovesTheToken(t *testing.T) {
 			if got := f.loggedIn(); len(got) != 1 || got[0] != 42 {
 				t.Errorf("OnLogin calls = %v, want [42]", got)
 			}
+			f.wantForgotten(t, 42, "refresh-tok-1")
 			if c := cookieNamed(rec, moveCookie); c == nil || c.MaxAge >= 0 || c.Path != "/auth" {
 				t.Errorf("eve_move cookie not cleared: %+v", c)
 			}
@@ -601,6 +610,9 @@ func TestMoveFailuresAreNeverSilent(t *testing.T) {
 		}
 		if len(f.loggedIn()) != 0 {
 			t.Error("OnLogin ran after a failed save")
+		}
+		if got := f.forgotten(); len(got) != 0 {
+			t.Errorf("OnTokenSaved ran after a failed save: %+v", got)
 		}
 		if c := cookieNamed(rec, moveCookie); c == nil || c.MaxAge >= 0 {
 			t.Errorf("eve_move cookie not cleared: %+v", c)
