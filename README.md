@@ -139,7 +139,7 @@ A signed-in user can register more characters under the same account: use "Add c
 
 Environment variables: `EVE_WALLETS_DB` is the database path (the `--db` flag wins); `EVE_WALLETS_CLIENT_ID` replaces the embedded EVE client id (see [Sign-in and port 8088](#sign-in-and-port-8088)); `EVE_WALLETS_UPDATE_API` overrides the GitHub API base URL used by `update` (for tests).
 
-Default database: `$XDG_DATA_HOME/eve-wallets/wallets.db`, else `~/.local/share/eve-wallets/wallets.db`. The directory is created with mode 0700 and the database files (including `-wal` and `-shm`) with 0600.
+Default database: `$XDG_DATA_HOME/eve-wallets/wallets.db`, else `~/.local/share/eve-wallets/wallets.db`. On Windows, `%LOCALAPPDATA%\eve-wallets\wallets.db` (`%USERPROFILE%\AppData\Local` is used if `LOCALAPPDATA` is empty). The directory is created with mode 0700 and the database files (including `-wal` and `-shm`) with 0600.
 
 ### Run as a systemd user service
 
@@ -301,6 +301,6 @@ Not verified:
 - The division names path was run against the real ESI only with a character that is not a Director. The case where a Director receives the names (stored with source `esi`, and cleared for divisions that return to the default name) is covered by fakes only.
 - Loyalty points: the collection, the API and the page are covered by fakes, a temporary SQLite database and literal-string UI checks only; no real ESI call was made, the migration of the real database to v5 was not run, and the tab was not opened in a browser.
 - Loyalty history: the migration to v6, the append-on-change logic and the API are covered by temporary SQLite databases and in-process HTTP tests only; the real database was not migrated and no real ESI call was made.
-- The systemd unit above, and running on macOS or Windows at all (only linux/amd64 was built and run here; the other platforms were only cross-compiled).
+- The systemd unit above, and running on macOS or Windows at all (only linux/amd64 was built and run here; the other platforms were only cross-compiled). On a real Windows machine the installer ran and the binary starts, but `serve` first failed because the default database path needed `HOME`, which Windows does not set; that is fixed (see Default database), and the fix itself was only tested on Linux with a simulated OS. Nothing else about running on Windows is verified.
 - `install.ps1` was only run on Linux under PowerShell 7, through its fake-release test (`scripts/test-install-ps1.sh`, also run in CI). It was not run on a real Windows machine nor in Windows PowerShell 5.1, so real file-lock behavior and the real GitHub redirect are unverified.
 - The release workflow, `install.sh` and `eve-wallets update` against real GitHub releases: they were only tested against local fake releases.

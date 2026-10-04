@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -183,7 +184,7 @@ func runCollector(ctx context.Context, name, what string, args []string, d deps,
 	if code, stop := parseFlags(fset, args); stop {
 		return code
 	}
-	path, err := resolveDBPath(*dbFlag, d.getenv)
+	path, err := resolveDBPath(*dbFlag, runtime.GOOS, d.getenv)
 	if err != nil {
 		fmt.Fprintf(d.stderr, "eve-wallets: %v\n", err)
 		return 1
@@ -314,7 +315,7 @@ func runServe(ctx context.Context, args []string, d deps) int {
 		fmt.Fprintf(d.stderr, "eve-wallets: --every must be at least %s\n", minEvery)
 		return 2
 	}
-	path, err := resolveDBPath(*dbFlag, d.getenv)
+	path, err := resolveDBPath(*dbFlag, runtime.GOOS, d.getenv)
 	if err != nil {
 		fmt.Fprintf(d.stderr, "eve-wallets: %v\n", err)
 		return 1
@@ -439,8 +440,12 @@ func checkLoopbackAddr(addr string) error {
 }
 
 // resolveDBPath picks the database path: flag, EVE_WALLETS_DB,
-// $XDG_DATA_HOME/eve-wallets/wallets.db, then ~/.local/share/eve-wallets/wallets.db.
-func resolveDBPath(flagValue string, getenv func(string) string) (string, error) {
+// $XDG_DATA_HOME/eve-wallets/wallets.db, then on Windows
+// %LOCALAPPDATA%\eve-wallets\wallets.db (or %USERPROFILE%\AppData\Local when
+// LOCALAPPDATA is empty), and finally ~/.local/share/eve-wallets/wallets.db
+// from $HOME. goos is a parameter so the choice is testable; callers pass
+// runtime.GOOS.
+func resolveDBPath(flagValue, goos string, getenv func(string) string) (string, error) {
 	if flagValue != "" {
 		return flagValue, nil
 	}
@@ -450,10 +455,18 @@ func resolveDBPath(flagValue string, getenv func(string) string) (string, error)
 	if x := getenv("XDG_DATA_HOME"); x != "" {
 		return filepath.Join(x, "eve-wallets", "wallets.db"), nil
 	}
+	if goos == "windows" {
+		if l := getenv("LOCALAPPDATA"); l != "" {
+			return filepath.Join(l, "eve-wallets", "wallets.db"), nil
+		}
+		if u := getenv("USERPROFILE"); u != "" {
+			return filepath.Join(u, "AppData", "Local", "eve-wallets", "wallets.db"), nil
+		}
+	}
 	if home := getenv("HOME"); home != "" {
 		return filepath.Join(home, ".local", "share", "eve-wallets", "wallets.db"), nil
 	}
-	return "", errors.New("cannot determine the database path: set --db, EVE_WALLETS_DB or HOME")
+	return "", errors.New("cannot determine the database path: set --db, EVE_WALLETS_DB, HOME or (on Windows) LOCALAPPDATA")
 }
 
 // openSecureStore opens the database with a private directory (0700) and

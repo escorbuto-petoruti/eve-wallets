@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -15,7 +16,7 @@ import (
 // that needs no collector. It returns (nil, code, true) when the command must
 // stop.
 func openStoreOnly(dbFlag *string, d deps) (*store.Store, int, bool) {
-	path, err := resolveDBPath(*dbFlag, d.getenv)
+	path, err := resolveDBPath(*dbFlag, runtime.GOOS, d.getenv)
 	if err != nil {
 		fmt.Fprintf(d.stderr, "eve-wallets: %v\n", err)
 		return nil, 1, true

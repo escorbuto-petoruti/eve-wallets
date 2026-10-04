@@ -276,24 +276,38 @@ func TestResolveDBPath(t *testing.T) {
 	tests := []struct {
 		name string
 		flag string
+		goos string
 		env  map[string]string
 		want string
 	}{
-		{"flag wins", "/flag.db", map[string]string{"EVE_WALLETS_DB": "/env.db", "XDG_DATA_HOME": "/xdg", "HOME": "/home/u"}, "/flag.db"},
-		{"env var", "", map[string]string{"EVE_WALLETS_DB": "/env.db", "XDG_DATA_HOME": "/xdg", "HOME": "/home/u"}, "/env.db"},
-		{"xdg data home", "", map[string]string{"XDG_DATA_HOME": "/xdg", "HOME": "/home/u"}, "/xdg/eve-wallets/wallets.db"},
-		{"home fallback", "", map[string]string{"HOME": "/home/u"}, "/home/u/.local/share/eve-wallets/wallets.db"},
+		{"flag wins", "/flag.db", "linux", map[string]string{"EVE_WALLETS_DB": "/env.db", "XDG_DATA_HOME": "/xdg", "HOME": "/home/u"}, "/flag.db"},
+		{"env var", "", "linux", map[string]string{"EVE_WALLETS_DB": "/env.db", "XDG_DATA_HOME": "/xdg", "HOME": "/home/u"}, "/env.db"},
+		{"xdg data home", "", "linux", map[string]string{"XDG_DATA_HOME": "/xdg", "HOME": "/home/u"}, filepath.Join("/xdg", "eve-wallets", "wallets.db")},
+		{"home fallback", "", "linux", map[string]string{"HOME": "/home/u"}, filepath.Join("/home/u", ".local", "share", "eve-wallets", "wallets.db")},
+		{"linux ignores LOCALAPPDATA", "", "linux", map[string]string{"LOCALAPPDATA": "/local", "HOME": "/home/u"}, filepath.Join("/home/u", ".local", "share", "eve-wallets", "wallets.db")},
+		{"darwin ignores LOCALAPPDATA", "", "darwin", map[string]string{"LOCALAPPDATA": "/local", "HOME": "/home/u"}, filepath.Join("/home/u", ".local", "share", "eve-wallets", "wallets.db")},
+		{"windows flag wins", "/flag.db", "windows", map[string]string{"LOCALAPPDATA": "/local"}, "/flag.db"},
+		{"windows env var", "", "windows", map[string]string{"EVE_WALLETS_DB": "/env.db", "LOCALAPPDATA": "/local"}, "/env.db"},
+		{"windows xdg beats LOCALAPPDATA", "", "windows", map[string]string{"XDG_DATA_HOME": "/xdg", "LOCALAPPDATA": "/local"}, filepath.Join("/xdg", "eve-wallets", "wallets.db")},
+		{"windows LOCALAPPDATA", "", "windows", map[string]string{"LOCALAPPDATA": "/local", "USERPROFILE": "/profile", "HOME": "/home/u"}, filepath.Join("/local", "eve-wallets", "wallets.db")},
+		{"windows USERPROFILE fallback", "", "windows", map[string]string{"USERPROFILE": "/profile", "HOME": "/home/u"}, filepath.Join("/profile", "AppData", "Local", "eve-wallets", "wallets.db")},
+		{"windows HOME last resort", "", "windows", map[string]string{"HOME": "/home/u"}, filepath.Join("/home/u", ".local", "share", "eve-wallets", "wallets.db")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := resolveDBPath(tt.flag, func(k string) string { return tt.env[k] })
+			got, err := resolveDBPath(tt.flag, tt.goos, func(k string) string { return tt.env[k] })
 			if err != nil || got != tt.want {
 				t.Errorf("got %q, %v; want %q", got, err, tt.want)
 			}
 		})
 	}
-	if _, err := resolveDBPath("", func(string) string { return "" }); err == nil {
-		t.Error("no HOME: want error")
+	for _, goos := range []string{"linux", "windows"} {
+		if _, err := resolveDBPath("", goos, func(string) string { return "" }); err == nil {
+			t.Errorf("%s with nothing set: want error", goos)
+		}
+	}
+	if _, err := resolveDBPath("", "linux", func(k string) string { return map[string]string{"LOCALAPPDATA": "/local", "USERPROFILE": "/p"}[k] }); err == nil {
+		t.Error("linux with only Windows variables: want error")
 	}
 }
 
