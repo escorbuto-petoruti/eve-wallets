@@ -51,6 +51,12 @@ type fakeESI struct {
 
 	journals   map[string][]esi.JournalEntry // "char/<id>" or "corp/<id>/<division>"
 	journalErr map[string]error
+
+	loyalty     map[int64][]esi.LoyaltyPoints // character id -> points
+	loyaltyErr  map[int64]error
+	universe    map[int64]string // ids UniverseNames resolves
+	universeErr error
+	nameBatches [][]int64 // ids of each UniverseNames call
 }
 
 func (f *fakeESI) record(c string) {
@@ -109,6 +115,29 @@ func (f *fakeESI) CharacterJournal(_ context.Context, _ string, id int64) ([]esi
 	return f.journals[key], f.journalErr[key]
 }
 
+func (f *fakeESI) CharacterLoyaltyPoints(_ context.Context, token string, id int64) ([]esi.LoyaltyPoints, error) {
+	f.record(fmt.Sprintf("loyalty/%d", id))
+	if err := f.loyaltyErr[id]; err != nil {
+		return nil, err
+	}
+	return f.loyalty[id], nil
+}
+
+func (f *fakeESI) UniverseNames(_ context.Context, ids []int64) (map[int64]string, error) {
+	f.record("universe")
+	f.nameBatches = append(f.nameBatches, append([]int64(nil), ids...))
+	if f.universeErr != nil {
+		return nil, f.universeErr
+	}
+	out := make(map[int64]string)
+	for _, id := range ids {
+		if n, ok := f.universe[id]; ok {
+			out[id] = n
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeESI) CorporationJournal(_ context.Context, _ string, corp int64, division int) ([]esi.JournalEntry, error) {
 	key := fmt.Sprintf("corp/%d/%d", corp, division)
 	f.record("journal/" + key)
@@ -143,6 +172,50 @@ type fakeStore struct {
 	// linkCalls records every LinkWallet call as {user id, wallet id}.
 	linkCalls [][2]int64
 	linkErr   error
+
+	// loyalty is the stored snapshot per character; replaceCalls counts writes.
+	loyalty      map[int64][]store.LoyaltyPoints
+	replaceCalls int
+	replaceErr   error
+	corpNames    map[int64]string // the cached corporation names
+	namesErr     error
+	upserted     []map[int64]string
+}
+
+func (s *fakeStore) ReplaceLoyalty(_ context.Context, id int64, rows []store.LoyaltyPoints, _ time.Time) error {
+	s.replaceCalls++
+	if s.replaceErr != nil {
+		return s.replaceErr
+	}
+	if s.loyalty == nil {
+		s.loyalty = make(map[int64][]store.LoyaltyPoints)
+	}
+	s.loyalty[id] = rows
+	return nil
+}
+
+func (s *fakeStore) UpsertCorporationNames(_ context.Context, names map[int64]string, _ time.Time) error {
+	if s.namesErr != nil {
+		return s.namesErr
+	}
+	s.upserted = append(s.upserted, names)
+	if s.corpNames == nil {
+		s.corpNames = make(map[int64]string)
+	}
+	for id, n := range names {
+		s.corpNames[id] = n
+	}
+	return nil
+}
+
+func (s *fakeStore) CorporationNames(_ context.Context, ids []int64) (map[int64]string, error) {
+	out := make(map[int64]string)
+	for _, id := range ids {
+		if n, ok := s.corpNames[id]; ok {
+			out[id] = n
+		}
+	}
+	return out, s.namesErr
 }
 
 type point struct {
@@ -238,7 +311,7 @@ func newCollector(a *fakeAuth, e *fakeESI, s *fakeStore) *Collector {
 func forbidden() error { return &esi.APIError{Status: 403, Message: "no role"} }
 
 func TestPersonalOnly(t *testing.T) {
-	a := &fakeAuth{chars: []auth.Character{{ID: 1, Name: "Alice", Scopes: []string{charScope}}}}
+	a := &fakeAuth{chars: []auth.Character{{ID: 1, Name: "Alice", Scopes: []string{charScope, lpScope}}}}
 	e := &fakeESI{wallets: map[int64]int64{1: 123456}}
 	s := &fakeStore{}
 	rep, err := newCollector(a, e, s).Run(context.Background())
@@ -262,7 +335,7 @@ func TestPersonalOnly(t *testing.T) {
 }
 
 func TestPersonalAndCorporation(t *testing.T) {
-	a := &fakeAuth{chars: []auth.Character{{ID: 1, Name: "Alice", Scopes: []string{charScope, corpScope}}}}
+	a := &fakeAuth{chars: []auth.Character{{ID: 1, Name: "Alice", Scopes: []string{charScope, corpScope, lpScope}}}}
 	e := &fakeESI{
 		wallets:    map[int64]int64{1: 100},
 		corpOf:     map[int64]int64{1: 900},
@@ -291,7 +364,7 @@ func TestMissingPersonalScopeIsSkip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(s.snaps) != 0 || len(rep.Errors) != 0 || len(rep.Skipped) != 2 {
+	if len(s.snaps) != 0 || len(rep.Errors) != 0 || len(rep.Skipped) != 3 { // wallet, loyalty and corporation scopes
 		t.Fatalf("report = %+v", rep)
 	}
 	if len(e.calls) != 0 || len(a.tokenCall) != 0 {
@@ -307,7 +380,7 @@ func TestCorporationForbiddenIsSkip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rep.Errors) != 0 || len(rep.Skipped) != 2 {
+	if len(rep.Errors) != 0 || len(rep.Skipped) != 3 { // character wallet, loyalty scope, role
 		t.Fatalf("report = %+v", rep)
 	}
 	var found bool
@@ -554,9 +627,9 @@ func TestListFailureIsFatal(t *testing.T) {
 // endpoint can scope the report to the signed-in user.
 func TestSkipsAndErrorsCarryOwnerIdentity(t *testing.T) {
 	a := &fakeAuth{chars: []auth.Character{
-		{ID: 1, Name: "Alice", Scopes: []string{charScope, corpScope}}, // corporation wallet forbidden
-		{ID: 2, Name: "Bob", Scopes: []string{charScope}},              // personal wallet fails, corporation scope missing
-		{ID: 3, Name: "Dan", Scopes: []string{charScope, corpScope}},   // corporation call fails
+		{ID: 1, Name: "Alice", Scopes: []string{charScope, corpScope, lpScope}}, // corporation wallet forbidden
+		{ID: 2, Name: "Bob", Scopes: []string{charScope, lpScope}},              // personal wallet fails, corporation scope missing
+		{ID: 3, Name: "Dan", Scopes: []string{charScope, corpScope, lpScope}},   // corporation call fails
 	}}
 	e := &fakeESI{
 		wallets:   map[int64]int64{1: 100, 2: 200, 3: 300},

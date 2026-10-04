@@ -2,7 +2,9 @@ package esi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -504,5 +506,111 @@ func TestCorporationDivisionsMalformed(t *testing.T) {
 	})
 	if _, err := c.CorporationDivisions(context.Background(), testToken, 900); err == nil {
 		t.Fatal("want decode error")
+	}
+}
+
+func TestCharacterLoyaltyPoints(t *testing.T) {
+	c := newTestClient(t, true, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/characters/42/loyalty/points" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`[{"corporation_id":1000125,"loyalty_points":9007199254740993},{"corporation_id":1000002,"loyalty_points":0}]`))
+	})
+	got, err := c.CharacterLoyaltyPoints(context.Background(), testToken, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []LoyaltyPoints{{CorporationID: 1000125, Points: 9007199254740993}, {CorporationID: 1000002, Points: 0}}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestCharacterLoyaltyPointsEmptyAndErrors(t *testing.T) {
+	c := newTestClient(t, true, func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`[]`)) })
+	got, err := c.CharacterLoyaltyPoints(context.Background(), testToken, 1)
+	if err != nil || got == nil || len(got) != 0 {
+		t.Fatalf("empty = %#v, %v", got, err)
+	}
+
+	c = newTestClient(t, true, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"token is not valid for scope"}`))
+	})
+	if _, err := c.CharacterLoyaltyPoints(context.Background(), testToken, 1); !IsForbidden(err) {
+		t.Fatalf("err = %v, want forbidden", err)
+	}
+
+	c = newTestClient(t, true, func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"nope":1}`)) })
+	if _, err := c.CharacterLoyaltyPoints(context.Background(), testToken, 1); err == nil {
+		t.Fatal("expected a decode error")
+	}
+}
+
+func TestUniverseNames(t *testing.T) {
+	c := newTestClient(t, false, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/universe/names" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if ct := r.Header.Get("Content-Type"); ct != "application/json" {
+			t.Errorf("Content-Type = %q", ct)
+		}
+		body, _ := io.ReadAll(r.Body)
+		if string(body) != `[3,1,2]` {
+			t.Errorf("body = %s (duplicates must be dropped, order kept)", body)
+		}
+		_, _ = w.Write([]byte(`[{"category":"corporation","id":1,"name":"One"},{"category":"corporation","id":2,"name":"Two"}]`))
+	})
+	got, err := c.UniverseNames(context.Background(), []int64{3, 1, 3, 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[1] != "One" || got[2] != "Two" {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestUniverseNamesBatchesAndSkipsEmpty(t *testing.T) {
+	var sizes []int
+	c := newTestClient(t, false, func(w http.ResponseWriter, r *http.Request) {
+		var ids []int64
+		if err := json.NewDecoder(r.Body).Decode(&ids); err != nil {
+			t.Error(err)
+		}
+		sizes = append(sizes, len(ids))
+		out := make([]map[string]any, 0, len(ids))
+		for _, id := range ids {
+			out = append(out, map[string]any{"category": "corporation", "id": id, "name": "n"})
+		}
+		_ = json.NewEncoder(w).Encode(out)
+	})
+	if got, err := c.UniverseNames(context.Background(), nil); err != nil || len(got) != 0 || len(sizes) != 0 {
+		t.Fatalf("empty = %v, %v, calls %v", got, err, sizes)
+	}
+	ids := make([]int64, 2500)
+	for i := range ids {
+		ids[i] = int64(i + 1)
+	}
+	got, err := c.UniverseNames(context.Background(), ids)
+	if err != nil || len(got) != 2500 {
+		t.Fatalf("got %d names, %v", len(got), err)
+	}
+	if len(sizes) != 3 || sizes[0] != 1000 || sizes[1] != 1000 || sizes[2] != 500 {
+		t.Fatalf("batch sizes = %v", sizes)
+	}
+}
+
+func TestUniverseNamesErrors(t *testing.T) {
+	c := newTestClient(t, false, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"Ensure all IDs are valid"}`))
+	})
+	if _, err := c.UniverseNames(context.Background(), []int64{1}); !IsNotFound(err) {
+		t.Fatalf("err = %v, want not found", err)
+	}
+	c = newTestClient(t, false, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(420) })
+	var rl *RateLimitError
+	if _, err := c.UniverseNames(context.Background(), []int64{1}); !errors.As(err, &rl) {
+		t.Fatalf("err = %v, want rate limit", err)
 	}
 }

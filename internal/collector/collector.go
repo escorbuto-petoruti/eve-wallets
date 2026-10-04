@@ -22,6 +22,7 @@ const (
 	ScopeCharacterWallet   = "esi-wallet.read_character_wallet.v1"
 	ScopeCorporationWallet = "esi-wallet.read_corporation_wallets.v1"
 	ScopeCorporationNames  = "esi-corporations.read_divisions.v1"
+	ScopeCharacterLoyalty  = "esi-characters.read_loyalty.v1"
 
 	ReasonMissingRole       = "missing corporation role"
 	ReasonMissingDirector   = "cannot read division names (needs the Director role); default names are shown"
@@ -37,6 +38,8 @@ type ESIClient interface {
 	CorporationWallets(ctx context.Context, token string, corporationID int64) ([]esi.DivisionBalance, error)
 	CorporationDivisions(ctx context.Context, token string, corporationID int64) (esi.DivisionNames, error)
 	CharacterJournal(ctx context.Context, token string, characterID int64) ([]esi.JournalEntry, error)
+	CharacterLoyaltyPoints(ctx context.Context, token string, characterID int64) ([]esi.LoyaltyPoints, error)
+	UniverseNames(ctx context.Context, ids []int64) (map[int64]string, error)
 	CorporationJournal(ctx context.Context, token string, corporationID int64, division int) ([]esi.JournalEntry, error)
 }
 
@@ -51,6 +54,11 @@ type StoreWriter interface {
 	ClearESIName(ctx context.Context, walletID int64) error
 	// LinkWallet lets a user see a wallet; linking twice is a no-op.
 	LinkWallet(ctx context.Context, userID, walletID int64) error
+	// ReplaceLoyalty makes rows the whole loyalty snapshot of a character.
+	ReplaceLoyalty(ctx context.Context, characterID int64, rows []store.LoyaltyPoints, at time.Time) error
+	// CorporationNames returns the cached names; unknown ids are absent.
+	CorporationNames(ctx context.Context, ids []int64) (map[int64]string, error)
+	UpsertCorporationNames(ctx context.Context, names map[int64]string, at time.Time) error
 }
 
 var _ ESIClient = (*esi.Client)(nil)
@@ -154,6 +162,11 @@ type walker struct {
 	errors   []ItemError
 	limited  bool
 	retry    time.Duration
+
+	// loyalty, when set, makes the walk fetch the loyalty points of every
+	// character that has the scope and record the corporations it saw in it.
+	loyalty     map[int64]bool
+	loyaltyTime time.Time
 
 	// personal handles the personal wallet of ch.
 	personal func(ctx context.Context, ch auth.Character, token string) error
@@ -266,7 +279,11 @@ func (c *Collector) Run(ctx context.Context) (Report, error) {
 		}
 		return nil
 	}
+	w.loyalty, w.loyaltyTime = make(map[int64]bool), rep.TakenAt
 	err := w.walk(ctx)
+	if err == nil && !w.limited {
+		err = w.loyaltyNames(ctx)
+	}
 	rep.Skipped, rep.Errors = w.skipped, w.errors
 	rep.RateLimited, rep.RetryAfter = w.limited, w.retry
 	if err != nil && ctx.Err() == nil {
@@ -309,11 +326,93 @@ func (w *walker) character(ctx context.Context, ch auth.Character) error {
 		}
 	}
 
+	if err := w.characterLoyalty(ctx, ch, getToken); err != nil {
+		return err
+	}
+
 	if !slices.Contains(ch.Scopes, ScopeCorporationWallet) {
 		w.skip(store.KindCharacter, ch.ID, ch.Name, fmt.Sprintf(reasonMissingScopeFmt, ScopeCorporationWallet))
 		return nil
 	}
 	return w.corp(ctx, ch, getToken)
+}
+
+// characterLoyalty stores the loyalty points snapshot of the character when the
+// pass wants it. A token without the scope, or a 403, is a recorded skip; any
+// other failure is an item error. Either way the stored snapshot, the ISK
+// wallets and the journal are left alone.
+func (w *walker) characterLoyalty(ctx context.Context, ch auth.Character, getToken func() (string, bool)) error {
+	if w.loyalty == nil {
+		return nil
+	}
+	missing := fmt.Sprintf(reasonMissingScopeFmt, ScopeCharacterLoyalty)
+	if !slices.Contains(ch.Scopes, ScopeCharacterLoyalty) {
+		w.skip(store.KindCharacter, ch.ID, ch.Name, missing)
+		return nil
+	}
+	tok, ok := getToken()
+	if !ok {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	points, err := w.c.deps.ESI.CharacterLoyaltyPoints(ctx, tok, ch.ID)
+	if esi.IsForbidden(err) {
+		w.skip(store.KindCharacter, ch.ID, ch.Name, missing)
+		return nil
+	}
+	if err != nil {
+		return w.esiFailure(ctx, store.KindCharacter, ch.ID, ch.Name, err)
+	}
+	rows := make([]store.LoyaltyPoints, 0, len(points))
+	for _, p := range points {
+		rows = append(rows, store.LoyaltyPoints{CorporationID: p.CorporationID, Points: p.Points})
+		w.loyalty[p.CorporationID] = true
+	}
+	if err := w.c.deps.Store.ReplaceLoyalty(ctx, ch.ID, rows, w.loyaltyTime); err != nil {
+		w.fail(store.KindCharacter, ch.ID, ch.Name, err)
+	}
+	return nil
+}
+
+// loyaltyNames resolves, with one batched call, the corporations seen in this
+// pass whose name is not cached yet. A failed lookup is not an error: the
+// corporation keeps showing its id. Only a rate limit is noted, and a context
+// error ends the run.
+func (w *walker) loyaltyNames(ctx context.Context) error {
+	if len(w.loyalty) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(w.loyalty))
+	for id := range w.loyalty {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	cached, err := w.c.deps.Store.CorporationNames(ctx, ids)
+	if err != nil {
+		w.fail(store.KindCharacter, 0, "corporation names", err)
+		return nil
+	}
+	ids = slices.DeleteFunc(ids, func(id int64) bool { _, ok := cached[id]; return ok })
+	if len(ids) == 0 {
+		return nil
+	}
+	names, err := w.c.deps.ESI.UniverseNames(ctx, ids)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		var rl *esi.RateLimitError
+		if errors.As(err, &rl) {
+			w.limited, w.retry = true, rl.RetryAfter
+		}
+		return nil
+	}
+	if err := w.c.deps.Store.UpsertCorporationNames(ctx, names, w.loyaltyTime); err != nil {
+		w.fail(store.KindCharacter, 0, "corporation names", err)
+	}
+	return nil
 }
 
 func (w *walker) corp(ctx context.Context, ch auth.Character, getToken func() (string, bool)) error {

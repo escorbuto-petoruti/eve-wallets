@@ -69,6 +69,14 @@ func (fakeESI) CharacterJournal(context.Context, string, int64) ([]esi.JournalEn
 	at := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
 	return []esi.JournalEntry{{ID: 1, Date: at, BalanceCents: &bal}, {ID: 2, Date: at}}, nil
 }
+func (fakeESI) CharacterLoyaltyPoints(context.Context, string, int64) ([]esi.LoyaltyPoints, error) {
+	return nil, nil
+}
+
+func (fakeESI) UniverseNames(context.Context, []int64) (map[int64]string, error) {
+	return nil, errors.New("unused")
+}
+
 func (fakeESI) CorporationJournal(context.Context, string, int64, int) ([]esi.JournalEntry, error) {
 	return nil, errors.New("unused")
 }
@@ -107,7 +115,7 @@ func newHarness(t *testing.T, env map[string]string) *harness {
 	h := &harness{
 		out:       &syncBuffer{},
 		err:       &syncBuffer{},
-		tokens:    &fakeTokens{chars: []auth.Character{{ID: 1, Name: "Alice", Scopes: []string{charScope}, UserID: 1}}},
+		tokens:    &fakeTokens{chars: []auth.Character{{ID: 1, Name: "Alice", Scopes: []string{charScope, collector.ScopeCharacterLoyalty}, UserID: 1}}},
 		listeners: make(chan net.Listener, 1),
 	}
 	h.deps = deps{
