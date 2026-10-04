@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"strings"
 	"time"
 	"unicode"
@@ -225,8 +226,12 @@ var migrations = []string{
 
 // Store is a SQLite-backed wallet history.
 type Store struct {
-	db *sql.DB
+	db         *sql.DB
+	backupPath string
 }
+
+// BackupPath is the backup Open wrote before migrating, or "" when it wrote none.
+func (s *Store) BackupPath() string { return s.backupPath }
 
 // Open opens (creating if needed) the database at path and applies pending
 // migrations. Use ":memory:" for a private in-memory database.
@@ -237,6 +242,12 @@ func Open(path string) (*Store, error) {
 	} else {
 		dsn += "&_pragma=journal_mode(WAL)"
 	}
+	existed := false
+	if path != ":memory:" {
+		if _, err := os.Stat(path); err == nil {
+			existed = true
+		}
+	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("store: open %s: %w", path, err)
@@ -246,6 +257,14 @@ func Open(path string) (*Store, error) {
 		db.SetMaxOpenConns(1)
 	}
 	s := &Store{db: db}
+	if existed {
+		bak, err := backupBeforeMigrate(context.Background(), db, path)
+		if err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		s.backupPath = bak
+	}
 	if err := s.migrate(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err

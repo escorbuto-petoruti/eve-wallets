@@ -41,6 +41,7 @@ const (
 )
 
 const usage = `Usage:
+  eve-wallets version
   eve-wallets collect [--db PATH]
   eve-wallets backfill [--db PATH]
   eve-wallets serve [--addr 127.0.0.1:8088] [--db PATH] [--every 30m] [--no-collect] [--no-backfill]
@@ -49,6 +50,7 @@ const usage = `Usage:
   eve-wallets label [--db PATH] --clear <wallet-id>
 
 Commands:
+  version  print the version
   collect  take one snapshot of every wallet and print a summary
   backfill store the last 30 days of history from the wallet journals
   serve    serve the charts on a loopback address; each cycle takes a snapshot and backfills the journal
@@ -102,6 +104,9 @@ func run(ctx context.Context, args []string, d deps) int {
 	case "help":
 		fmt.Fprint(d.stderr, usage)
 		return 2
+	case "version", "--version":
+		fmt.Fprintf(d.stdout, "eve-wallets %s\n", version)
+		return 0
 	case "collect":
 		return runCollect(ctx, args[1:], d)
 	case "backfill":
