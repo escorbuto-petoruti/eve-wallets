@@ -46,7 +46,7 @@ const usage = `Usage:
   eve-wallets update [--check] [--force]
   eve-wallets collect [--db PATH]
   eve-wallets backfill [--db PATH]
-  eve-wallets serve [--addr 127.0.0.1:8088] [--db PATH] [--every 30m] [--no-collect] [--no-backfill]
+  eve-wallets serve [--addr 127.0.0.1:8088] [--db PATH] [--every 30m] [--no-collect] [--no-backfill] [--open | --no-open]
   eve-wallets wallets [--db PATH]
   eve-wallets label [--db PATH] <wallet-id> <name...>
   eve-wallets label [--db PATH] --clear <wallet-id>
@@ -56,7 +56,8 @@ Commands:
   update   replace the binary with the latest GitHub release (linux and macOS)
   collect  take one snapshot of every wallet and print a summary
   backfill store the last 30 days of history from the wallet journals
-  serve    serve the charts on a loopback address; each cycle takes a snapshot and backfills the journal
+  serve    serve the charts on a loopback address; each cycle takes a snapshot and backfills the journal;
+           on Windows in a terminal it opens the page in your browser (--no-open stops it, --open forces it elsewhere)
   wallets  list the wallets with id, owner, division and displayed name
   label    set (or --clear) the name shown for a wallet; flags go before the id
 
@@ -75,6 +76,12 @@ type deps struct {
 	newESI         func(userAgent string) collector.ESIClient
 	listen         func(network, addr string) (net.Listener, error)
 	newSSO         func() web.SSO
+	// goos, isTerminal and openBrowser decide and perform the browser launch of
+	// serve; tests replace them so no real browser starts. Zero values mean
+	// runtime.GOOS, no terminal and no opener.
+	goos        string
+	isTerminal  func() bool
+	openBrowser func(url string) error
 }
 
 func main() {
@@ -90,6 +97,12 @@ func main() {
 		},
 		listen: net.Listen,
 		newSSO: func() web.SSO { return sso.NewClient(ssoConfig(os.Getenv)) },
+
+		goos:       runtime.GOOS,
+		isTerminal: stdoutIsTerminal,
+		openBrowser: func(url string) error {
+			return startBrowser(runtime.GOOS, url)
+		},
 	})
 	stop()
 	os.Exit(code)
@@ -304,8 +317,14 @@ func runServe(ctx context.Context, args []string, d deps) int {
 	every := fset.Duration("every", defaultEvery, "collection interval (minimum 1m)")
 	noCollect := fset.Bool("no-collect", false, "serve without collecting in the background")
 	noBackfill := fset.Bool("no-backfill", false, "take snapshots only; do not backfill the journal each cycle")
+	openFlag := fset.Bool("open", false, "open the page in the browser (default on Windows in a terminal)")
+	noOpen := fset.Bool("no-open", false, "do not open the page in the browser")
 	if code, stop := parseFlags(fset, args); stop {
 		return code
+	}
+	if *openFlag && *noOpen {
+		fmt.Fprintln(d.stderr, "eve-wallets: --open and --no-open cannot be used together")
+		return 2
 	}
 	if err := checkLoopbackAddr(*addr); err != nil {
 		fmt.Fprintf(d.stderr, "eve-wallets: %v\n", err)
@@ -399,6 +418,24 @@ func runServe(ctx context.Context, args []string, d deps) int {
 	fmt.Fprintf(d.stdout, "Serving on http://%s (database %s)\n", ln.Addr(), path)
 	if w := ssoPortWarning(ln.Addr().String()); w != "" {
 		fmt.Fprintln(d.stderr, w)
+	}
+	goos := d.goos
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	tty := d.isTerminal != nil && d.isTerminal()
+	if shouldOpenBrowser(goos, tty, *openFlag, *noOpen, *addr) {
+		// The listener is up, so the page is reachable on the real bound port.
+		pageURL := browserURL(ln.Addr().String())
+		var oerr error
+		if d.openBrowser == nil {
+			oerr = errors.New("no browser opener available")
+		} else {
+			oerr = d.openBrowser(pageURL)
+		}
+		if oerr != nil {
+			fmt.Fprintf(d.stderr, "eve-wallets: could not open the browser (%v); open %s yourself\n", oerr, pageURL)
+		}
 	}
 
 	code := 0
