@@ -18,18 +18,24 @@ type jwksCache struct {
 	url  string
 	http *http.Client
 
-	minRefetch time.Duration
-	now        func() time.Time
-	fetchFn    func(context.Context) (map[string]*rsa.PublicKey, error)
+	minRefetch           time.Duration
+	minRetryAfterFailure time.Duration
+	now                  func() time.Time
+	fetchFn              func(context.Context) (map[string]*rsa.PublicKey, error)
 
 	mu        sync.Mutex
 	keys      map[string]*rsa.PublicKey
 	loaded    bool          // a fetch has succeeded
 	lastFetch time.Time     // when the last successful fetch finished
 	inflight  chan struct{} // closed when the running fetch ends; nil when idle
+	lastErr   error         // error of the last fetch when it failed; nil after a success
+	failedAt  time.Time     // when the last failed fetch finished
 }
 
-const defaultMinRefetch = time.Minute
+const (
+	defaultMinRefetch           = time.Minute
+	defaultMinRetryAfterFailure = 10 * time.Second
+)
 
 func (j *jwksCache) clock() time.Time {
 	if j.now != nil {
@@ -41,8 +47,9 @@ func (j *jwksCache) clock() time.Time {
 // key returns the key for kid, fetching the JWKS when the kid is not cached.
 // The mutex is never held across the network call. Once keys have been loaded,
 // an unknown kid triggers at most one refetch per minRefetch, so a stream of
-// bogus kids cannot amplify into JWKS requests. Concurrent callers share one
-// in-flight fetch.
+// bogus kids cannot amplify into JWKS requests. A failed fetch is also
+// throttled (minRetryAfterFailure) so an unreachable SSO is not hammered.
+// Concurrent callers share one in-flight fetch.
 func (j *jwksCache) key(ctx context.Context, kid string) (*rsa.PublicKey, error) {
 	for {
 		j.mu.Lock()
@@ -59,9 +66,14 @@ func (j *jwksCache) key(ctx context.Context, kid string) (*rsa.PublicKey, error)
 				return nil, ctx.Err()
 			}
 		}
+		if j.lastErr != nil && j.clock().Sub(j.failedAt) < j.minRetryAfterFailure {
+			err := j.lastErr
+			j.mu.Unlock()
+			return nil, fmt.Errorf("sso: jwks fetch failing, retry shortly: %w", err)
+		}
 		if j.loaded && j.clock().Sub(j.lastFetch) < j.minRefetch {
 			j.mu.Unlock()
-			return nil, fmt.Errorf("sso: unknown signing key %q", kid)
+			return nil, fmt.Errorf("sso: unknown signing key %q (keys were refreshed recently; retry in a minute)", kid)
 		}
 		done := make(chan struct{})
 		j.inflight = done
@@ -77,6 +89,9 @@ func (j *jwksCache) key(ctx context.Context, kid string) (*rsa.PublicKey, error)
 		j.inflight = nil
 		if err == nil {
 			j.keys, j.loaded, j.lastFetch = keys, true, j.clock()
+			j.lastErr = nil
+		} else {
+			j.lastErr, j.failedAt = err, j.clock()
 		}
 		j.mu.Unlock()
 		close(done)
