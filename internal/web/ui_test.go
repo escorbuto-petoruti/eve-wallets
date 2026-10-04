@@ -36,6 +36,11 @@ func TestUIAssetsArePublicWithSecurityHeaders(t *testing.T) {
 			t.Errorf("%s content type = %q, want prefix %q", tt.path, ct, tt.ctype)
 		}
 		assertSecurityHeaders(t, rec, tt.path)
+		// The assets are embedded in the binary: without revalidation a browser
+		// keeps showing the previous build after a deploy.
+		if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
+			t.Errorf("%s Cache-Control = %q, want no-cache", tt.path, cc)
+		}
 	}
 }
 

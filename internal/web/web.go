@@ -145,6 +145,9 @@ func serveAsset(w http.ResponseWriter, r *http.Request, name, ctype string) {
 	}
 	w.Header().Set("Content-Type", ctype)
 	w.Header().Set("Content-Length", strconv.Itoa(len(b)))
+	// Embedded assets carry no validators, so ask the browser to refetch them
+	// instead of reusing a heuristically cached copy of an older build.
+	w.Header().Set("Cache-Control", "no-cache")
 	if r.Method == http.MethodHead {
 		return
 	}
