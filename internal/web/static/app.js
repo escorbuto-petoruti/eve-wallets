@@ -121,10 +121,15 @@
     return groups;
   }
 
+  function destroyCharts(section) {
+    section.charts.forEach(function (c) { c.destroy(); });
+    section.charts = [];
+  }
+
   function clearSections() {
     state.sections.forEach(function (s) {
       s.token++; // drop late responses
-      if (s.chart) { s.chart.destroy(); s.chart = null; }
+      destroyCharts(s);
     });
     state.sections = [];
     state.active = null;
@@ -134,7 +139,7 @@
   }
 
   function buildSection(group, idx) {
-    var section = { group: group, selected: new Set(), chart: null, token: 0, totalBox: null, note: null, canvas: null, tab: null, panel: null };
+    var section = { group: group, charts: [], token: 0, note: null, grid: null, tab: null, panel: null, drawn: false };
     var card = el("section", undefined, "card");
     card.id = "panel-" + idx;
     card.setAttribute("role", "tabpanel");
@@ -158,46 +163,11 @@
     if (titleLogo) { title.insertBefore(titleLogo, title.firstChild); }
     card.appendChild(title);
 
-    var fs = el("fieldset");
-    fs.appendChild(el("legend", "Wallets in " + group.title, "sr-only"));
-    var box = el("div", undefined, "wallets");
-    group.wallets.slice(0, MAX_IDS).forEach(function (w) { section.selected.add(w.id); });
-    group.wallets.forEach(function (w) {
-      var label = el("label", undefined, "check");
-      var cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.checked = section.selected.has(w.id);
-      cb.addEventListener("change", function () {
-        if (cb.checked) { section.selected.add(w.id); } else { section.selected.delete(w.id); }
-        refreshChart(section);
-      });
-      label.appendChild(cb);
-      var pic = w.kind === "character" ? eveImage("character", w.owner_id, 32) : null;
-      if (pic) { label.appendChild(pic); }
-      label.appendChild(document.createTextNode(" " + walletLabel(w)));
-      box.appendChild(label);
-    });
-    fs.appendChild(box);
-    card.appendChild(fs);
-
-    var totalLabel = el("label", undefined, "check");
-    section.totalBox = document.createElement("input");
-    section.totalBox.type = "checkbox";
-    section.totalBox.setAttribute("aria-label", "Total for " + group.title);
-    section.totalBox.addEventListener("change", function () { refreshChart(section); });
-    totalLabel.appendChild(section.totalBox);
-    totalLabel.appendChild(document.createTextNode(" Total"));
-    card.appendChild(totalLabel);
-
     section.note = el("p", "", "muted");
     section.note.setAttribute("role", "status");
     card.appendChild(section.note);
-    var chartBox = el("div", undefined, "chart-box");
-    section.canvas = document.createElement("canvas");
-    section.canvas.setAttribute("role", "img");
-    section.canvas.setAttribute("aria-label", "Balance history for " + group.title);
-    chartBox.appendChild(section.canvas);
-    card.appendChild(chartBox);
+    section.grid = el("div", undefined, "panels");
+    card.appendChild(section.grid);
 
     card.appendChild(el("h3", "Latest balances"));
     var scroll = el("div", undefined, "scroll");
@@ -231,12 +201,13 @@
   // activateSection shows one panel. Only the active tab keeps a chart: the
   // others are destroyed and their pending requests are invalidated.
   function activateSection(section) {
-    if (state.active === section && section.chart) { return; }
+    if (state.active === section && section.drawn) { return; }
     state.sections.forEach(function (s) {
       var on = s === section;
       if (!on) {
         s.token++;
-        if (s.chart) { s.chart.destroy(); s.chart = null; }
+        destroyCharts(s);
+        s.drawn = false;
       }
       s.panel.hidden = !on;
       s.tab.setAttribute("aria-selected", on ? "true" : "false");
@@ -322,85 +293,118 @@
     return getComputedStyle(document.body).color || TOTAL_COLOR;
   }
 
-  function drawChart(section, resp) {
-    var datasets = resp.series.map(function (s, i) {
-      var w = section.group.wallets.find(function (x) { return x.id === s.wallet_id; });
-      return {
-        label: w ? walletLabel(w) : "Wallet " + s.wallet_id,
-        data: s.points.map(function (p) { return { x: p.t * 1000, y: p.cents / 100 }; }),
-        borderColor: PALETTE[i % PALETTE.length],
-        backgroundColor: PALETTE[i % PALETTE.length],
-        borderWidth: 2, pointRadius: 2, tension: 0, stepped: "before"
-      };
-    });
-    if (section.totalBox.checked && resp.total) {
-      datasets.push({
-        label: "Total",
-        data: resp.total.map(function (p) { return { x: p.t * 1000, y: p.cents / 100 }; }),
-        borderColor: totalColor(), backgroundColor: totalColor(),
-        borderWidth: 3, borderDash: [6, 4], pointRadius: 0, tension: 0, stepped: "before"
-      });
-    }
+  function pointsOf(list) {
+    return list.map(function (p) { return { x: p.t * 1000, y: p.cents / 100 }; });
+  }
+
+  // deltaInfo compares the first and last point of the range. The text label
+  // and the sign carry the direction, the color is only a reinforcement.
+  function deltaInfo(points) {
+    if (points.length < 2) { return { text: "No change data in this range", cls: "muted" }; }
+    var first = points[0].cents;
+    var diff = points[points.length - 1].cents - first;
+    var label = diff > 0 ? "Up" : diff < 0 ? "Down" : "Flat";
+    var cls = diff > 0 ? "good" : diff < 0 ? "bad" : "muted";
+    var sign = diff > 0 ? "+" : "";
+    var pct = first === 0 ? "n/a" : sign + (diff / Math.abs(first) * 100).toFixed(1) + "%";
+    return { text: label + " " + sign + formatISK(diff) + " ISK (" + pct + ") over the range", cls: cls };
+  }
+
+  // buildPanel adds one small multiple: title, current balance, delta and a
+  // canvas with its own Y scale.
+  function buildPanel(section, opts) {
+    var panel = el("article", undefined, "panel " + opts.cls);
+    var h = el("h3", undefined, "panel-title");
+    if (opts.image) { h.appendChild(opts.image); }
+    h.appendChild(document.createTextNode(opts.label));
+    panel.appendChild(h);
+    var last = opts.points.length ? opts.points[opts.points.length - 1].cents : opts.cents;
+    var hasBalance = last !== null && last !== undefined;
+    panel.appendChild(el("p", hasBalance ? formatISK(last) + " ISK" : "No balance yet", "big num"));
+    var d = deltaInfo(opts.points);
+    panel.appendChild(el("p", d.text, "delta " + d.cls));
+    var box = el("div", undefined, "spark");
+    var canvas = document.createElement("canvas");
+    canvas.setAttribute("role", "img");
+    canvas.setAttribute("aria-label", "Balance history for " + opts.label + ": " + (hasBalance ? formatISK(last) + " ISK now. " : "") + d.text);
+    box.appendChild(canvas);
+    panel.appendChild(box);
+    section.grid.appendChild(panel);
+    if (opts.points.length) { drawSpark(section, canvas, opts); }
+    else { box.replaceChildren(el("p", "No data points in this range.", "muted")); }
+  }
+
+  function drawSpark(section, canvas, opts) {
     var c = themeColors();
-    if (section.chart) { section.chart.destroy(); }
-    section.chart = new Chart(section.canvas, {
+    section.charts.push(new Chart(canvas, {
       type: "line",
-      data: { datasets: datasets },
+      data: { datasets: [{
+        label: opts.label,
+        data: pointsOf(opts.points),
+        borderColor: opts.color, backgroundColor: opts.color,
+        borderWidth: 2, pointRadius: 0, pointHoverRadius: 3, tension: 0, stepped: "before",
+        borderDash: opts.dashed ? [6, 4] : []
+      }] },
       options: {
         responsive: true, maintainAspectRatio: false, animation: false,
-        interaction: { mode: "nearest", intersect: false },
+        interaction: { mode: "index", intersect: false },
         parsing: false, normalized: true,
         scales: {
-          x: {
-            type: "linear",
-            ticks: { color: c.text, maxTicksLimit: 6, callback: function (v) { return new Date(v).toLocaleDateString(); } },
-            grid: { color: c.grid }
-          },
-          y: {
-            ticks: { color: c.text, callback: function (v) { return iskFmt.format(v); } },
-            grid: { color: c.grid }
-          }
+          x: { type: "linear", ticks: { color: c.text, maxTicksLimit: 4, callback: function (v) { return new Date(v).toLocaleDateString(); } }, grid: { color: c.grid } },
+          y: { ticks: { color: c.text, maxTicksLimit: 4, callback: function (v) { return iskFmt.format(v); } }, grid: { color: c.grid } }
         },
         plugins: {
-          legend: { labels: { color: c.text } },
+          legend: { display: false },
           tooltip: {
             callbacks: {
               title: function (items) { return items.length ? new Date(items[0].parsed.x).toLocaleString() : ""; },
-              label: function (item) { return item.dataset.label + ": " + iskFmt.format(item.parsed.y) + " ISK"; }
+              label: function (item) { return iskFmt.format(item.parsed.y) + " ISK"; }
             }
           }
         }
       }
+    }));
+  }
+
+  // drawPanels rebuilds the grid: one panel per wallet (colored by its fixed
+  // index in the owner group) plus the Total panel.
+  function drawPanels(section, resp) {
+    destroyCharts(section);
+    section.grid.replaceChildren();
+    var wallets = section.group.wallets;
+    var byId = new Map();
+    resp.series.forEach(function (s) { byId.set(s.wallet_id, s.points); });
+    wallets.slice(0, MAX_IDS).forEach(function (w, i) {
+      buildPanel(section, {
+        label: walletLabel(w), cls: "c" + (i % PALETTE.length), color: PALETTE[i % PALETTE.length],
+        image: w.kind === "character" ? eveImage("character", w.owner_id, 24) : null,
+        points: byId.get(w.id) || [], cents: w.cents
+      });
     });
+    if (resp.total) {
+      buildPanel(section, { label: "Total", cls: "total", color: totalColor(), dashed: true, image: null, points: resp.total, cents: null });
+    }
+    section.drawn = true;
   }
 
   function refreshChart(section) {
-    var ids = Array.from(section.selected);
+    var wallets = section.group.wallets;
+    var ids = wallets.slice(0, MAX_IDS).map(function (w) { return w.id; });
     var note = section.note;
     note.textContent = "";
-    if (ids.length === 0) {
-      section.token++;
-      if (section.chart) { section.chart.destroy(); section.chart = null; }
-      note.textContent = "Select at least one wallet.";
-      return;
-    }
-    if (ids.length > MAX_IDS) {
-      section.token++;
-      note.textContent = "Too many wallets selected (maximum " + MAX_IDS + ").";
-      return;
+    if (wallets.length > MAX_IDS) {
+      note.textContent = "Showing the first " + MAX_IDS + " of " + wallets.length + " wallets.";
     }
     var q = new URLSearchParams();
     q.set("wallet_ids", ids.join(","));
     if (state.range > 0) {
       q.set("from", new Date(Date.now() - state.range * 1000).toISOString());
     }
-    if (section.totalBox.checked) { q.set("total", "1"); }
+    q.set("total", "1");
     var token = ++section.token;
     getJSON("/api/series?" + q.toString()).then(function (resp) {
       if (token !== section.token) { return; }
-      drawChart(section, resp);
-      var any = resp.series.some(function (s) { return s.points.length > 0; });
-      note.textContent = any ? "" : "No data points in this range.";
+      drawPanels(section, resp);
     }).catch(function (err) {
       if (!err.unauthorized && token === section.token) { note.textContent = err.message; }
     });
