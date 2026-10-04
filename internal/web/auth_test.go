@@ -717,7 +717,8 @@ func TestLogout(t *testing.T) {
 }
 
 // A logout whose session delete fails must not claim success: the server
-// session would survive. The cookie is still cleared.
+// session would survive. The cookie is kept so the retry re-attempts the
+// delete, and the retry succeeds once the store works again.
 func TestLogoutReportsDeleteSessionFailure(t *testing.T) {
 	f := newFixture(t, nil, false)
 	raw, err := sql.Open("sqlite", f.dbPath)
@@ -738,8 +739,30 @@ func TestLogoutReportsDeleteSessionFailure(t *testing.T) {
 	if loc := rec.Header().Get("Location"); loc != "" {
 		t.Errorf("Location = %q, want no redirect", loc)
 	}
-	if c := cookieNamed(rec, sessionCookie); c == nil || c.MaxAge >= 0 || c.Value != "" {
-		t.Errorf("session cookie not expired: %+v", c)
+	if c := cookieNamed(rec, sessionCookie); c != nil {
+		t.Errorf("failed sign-out touched the session cookie: %+v", c)
+	}
+
+	// The cookie is still in the browser: once the store recovers, the retry
+	// deletes the session and signs out.
+	if _, err := raw.Exec(`DROP TRIGGER no_session_deletes`); err != nil {
+		t.Fatal(err)
+	}
+	retry := request(f.anon, http.MethodPost, "/auth/logout", func(r *http.Request) {
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: f.aliceCookie})
+		r.Header.Set("Origin", "http://localhost")
+	})
+	if retry.Code != http.StatusSeeOther {
+		t.Fatalf("retry status = %d, want 303", retry.Code)
+	}
+	if c := cookieNamed(retry, sessionCookie); c == nil || c.MaxAge >= 0 || c.Value != "" {
+		t.Errorf("retry did not clear the session cookie: %+v", c)
+	}
+	me := request(f.anon, http.MethodGet, "/api/me", func(r *http.Request) {
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: f.aliceCookie})
+	})
+	if me.Code == http.StatusOK {
+		t.Error("session survived the retried sign-out")
 	}
 }
 
