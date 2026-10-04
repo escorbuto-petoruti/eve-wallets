@@ -97,7 +97,9 @@ func TestUIKeepsCSPValid(t *testing.T) {
 		t.Error("index.html has an inline event handler")
 	}
 	for _, name := range []string{"index.html", "app.js", "style.css"} {
-		if regexp.MustCompile(`(?i)https?://|//cdn`).MatchString(asset(t, name)) {
+		// The only allowed external reference is the EVE image server (img-src).
+		src := strings.ReplaceAll(asset(t, name), "https://images.evetech.net/", "")
+		if regexp.MustCompile(`(?i)https?://|//cdn`).MatchString(src) {
 			t.Errorf("%s references an external URL", name)
 		}
 	}
@@ -258,5 +260,41 @@ func TestWalletLabelDoesNotRepeatTheOwner(t *testing.T) {
 	js := asset(t, "app.js")
 	if strings.Contains(js, "w.owner_name + \" \\u00b7 \"") {
 		t.Error("app.js still prefixes the owner name to the wallet label")
+	}
+}
+
+// Portraits and logos come from the EVE image server, which the CSP allows
+// for img-src only. Ids are validated before they reach a URL.
+func TestAppBuildsEveImageURLsFromSafeIds(t *testing.T) {
+	js := asset(t, "app.js")
+	for _, want := range []string{
+		"https://images.evetech.net/characters/",
+		"/portrait?size=64",
+		"https://images.evetech.net/corporations/",
+		"/logo?size=64",
+		"Number.isSafeInteger",
+		"> 0",
+		`"alt", ""`,
+		`"width"`, `"height"`,
+		`"lazy"`, `"async"`,
+		`addEventListener("error"`,
+		".remove()",
+		"eve-img",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("app.js lacks %q", want)
+		}
+	}
+	if strings.Contains(js, "innerHTML") || strings.Contains(js, ".style.") || strings.Contains(js, "onerror") {
+		t.Error("app.js must not use innerHTML, inline styles or onerror")
+	}
+}
+
+func TestStyleHasEveImageClass(t *testing.T) {
+	css := asset(t, "style.css")
+	for _, want := range []string{".eve-img", "vertical-align"} {
+		if !strings.Contains(css, want) {
+			t.Errorf("style.css lacks %q", want)
+		}
 	}
 }

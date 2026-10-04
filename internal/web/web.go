@@ -86,7 +86,7 @@ var postPaths = map[string]bool{
 func (s *server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		h.Set("Content-Security-Policy", "default-src 'self'")
+		h.Set("Content-Security-Policy", "default-src 'self'; img-src 'self' https://images.evetech.net")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
 		if !allowedHost(r.Host, s.deps.AllowedPort) {
