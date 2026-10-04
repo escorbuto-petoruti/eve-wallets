@@ -147,6 +147,20 @@ run "PATH =1 adds the install dir" 0 "added $D5 to your user PATH" INSTALL_DIR="
 run "PATH second run does not duplicate" 0 "already on your PATH" INSTALL_DIR="$D5/" EVE_WALLETS_TEST_PATH_FILE="$PF" EVE_WALLETS_ADD_TO_PATH=1
 [ "$(cat "$PF")" = "/usr/bin;$D5" ] || { echo "FAIL PATH duplicated: $(cat "$PF")"; fail=1; }
 
+# Existing entries are kept byte-for-byte (unexpanded %VAR% references included).
+D6="$WORK/inst-keep"
+PF2="$WORK/userpath-keep.txt"
+printf '%s' '%USERPROFILE%\bin;C:\tools' >"$PF2"
+run "PATH keeps other entries untouched" 0 "added $D6 to your user PATH" INSTALL_DIR="$D6" EVE_WALLETS_TEST_PATH_FILE="$PF2" EVE_WALLETS_ADD_TO_PATH=1
+[ "$(cat "$PF2")" = '%USERPROFILE%\bin;C:\tools'";$D6" ] || { echo "FAIL PATH entries changed: $(cat "$PF2")"; fail=1; }
+
+# An entry written with a %VAR% that expands to the install dir counts as present.
+D7="$WORK/inst-exp/bin"
+PF3="$WORK/userpath-exp.txt"
+printf '%s' '%LOCALAPPDATA%/bin' >"$PF3"
+run "PATH entry with %VAR% equal to the install dir is not duplicated" 0 "already on your PATH" INSTALL_DIR="$D7" LOCALAPPDATA="$WORK/inst-exp" EVE_WALLETS_TEST_PATH_FILE="$PF3" EVE_WALLETS_ADD_TO_PATH=1
+[ "$(cat "$PF3")" = '%LOCALAPPDATA%/bin' ] || { echo "FAIL PATH duplicated via %VAR%: $(cat "$PF3")"; fail=1; }
+
 # iex mode must not kill the host shell and must still report the error.
 rc=0
 out=$(clean_env INSTALL_DIR="$WORK/inst-iex" VERSION=v7.7.7 EVE_WALLETS_RELEASE_BASE="$BASE" \

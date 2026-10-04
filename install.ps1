@@ -19,10 +19,16 @@
 #   EVE_WALLETS_TEST_FAIL_REPLACE  test only: make the exe replacement fail
 #   EVE_WALLETS_TEST_PATH_FILE     test only: a file that stands in for the user
 #                             PATH value (read and written instead of the
-#                             user-scope Path variable; Linux has no registry)
+#                             user PATH registry value; Linux has no registry)
 #
 # The installer never needs administrator rights. It only ever touches your
-# user PATH (never the machine PATH), and only when you opt in.
+# user PATH (never the machine PATH), only when you opt in, and it only appends
+# its own directory: other entries and the value type are left as they were.
+
+# The real user PATH lives in HKCU\Environment. It is read and written through the registry
+# so %VAR% references stay unexpanded and the value type (usually REG_EXPAND_SZ) is kept:
+# [Environment]::Get/SetEnvironmentVariable would expand every entry and write plain text.
+function Test-EveWindows { return ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) }
 
 function Get-EveUserPath {
     if ($env:EVE_WALLETS_TEST_PATH_FILE) {
@@ -31,7 +37,17 @@ function Get-EveUserPath {
         }
         return ''
     }
-    return [string][Environment]::GetEnvironmentVariable('Path', 'User')
+    if (-not (Test-EveWindows)) { return '' }
+    $key = $null
+    try {
+        $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $false)
+        if (-not $key) { return '' }
+        return [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+    } catch {
+        throw "could not read your user PATH from the registry ($($_.Exception.Message)); nothing was changed"
+    } finally {
+        if ($key) { $key.Dispose() }
+    }
 }
 
 function Set-EveUserPath([string]$value) {
@@ -39,7 +55,31 @@ function Set-EveUserPath([string]$value) {
         [IO.File]::WriteAllText($env:EVE_WALLETS_TEST_PATH_FILE, $value)
         return
     }
-    [Environment]::SetEnvironmentVariable('Path', $value, 'User')
+    if (-not (Test-EveWindows)) { throw 'the user PATH can only be changed on Windows' }
+    $key = $null
+    try {
+        $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+        $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+        if ($key.GetValueNames() -contains 'Path') {
+            $existing = $key.GetValueKind('Path')
+            if ($existing -eq [Microsoft.Win32.RegistryValueKind]::String -or $existing -eq [Microsoft.Win32.RegistryValueKind]::ExpandString) {
+                $kind = $existing
+            }
+        }
+        $key.SetValue('Path', $value, $kind)
+    } catch {
+        throw "could not write your user PATH to the registry ($($_.Exception.Message)); it was left unchanged"
+    } finally {
+        if ($key) { $key.Dispose() }
+    }
+    # Direct registry writes do not tell running programs. Setting and removing a throwaway
+    # user variable makes .NET broadcast WM_SETTINGCHANGE so new terminals see the new PATH.
+    try {
+        [Environment]::SetEnvironmentVariable('EVE_WALLETS_PATH_REFRESH', '1', 'User')
+        [Environment]::SetEnvironmentVariable('EVE_WALLETS_PATH_REFRESH', $null, 'User')
+    } catch {
+        Write-Host "  (your PATH was saved, but running programs were not notified; sign out and in, or open a new terminal)"
+    }
 }
 
 function Test-EveInteractive {
@@ -54,11 +94,14 @@ function Test-EveInteractive {
 }
 
 # True when $dir is one of the ';'-separated entries of a user PATH value (case-insensitive,
-# trailing slashes ignored).
+# trailing slashes ignored), compared both as written and with %VAR% references expanded.
 function Test-EveDirInPath([string]$dir, [string]$pathValue) {
     $want = $dir.TrimEnd('\', '/')
     foreach ($p in ($pathValue -split ';')) {
-        if ($p.Trim().TrimEnd('\', '/') -ieq $want) { return $true }
+        $entry = $p.Trim()
+        if ($entry.TrimEnd('\', '/') -ieq $want) { return $true }
+        $expanded = [Environment]::ExpandEnvironmentVariables($entry)
+        if ($expanded.TrimEnd('\', '/') -ieq $want) { return $true }
     }
     return $false
 }
