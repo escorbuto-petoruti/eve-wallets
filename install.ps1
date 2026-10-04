@@ -11,6 +11,7 @@
 #                             <base>/latest redirects to <base>/tag/<tag> and
 #                             assets live under <base>/download/<tag>/
 #   EVE_WALLETS_TEST_ARCH     test only: pretend the machine architecture is this
+#   EVE_WALLETS_TEST_FAIL_REPLACE  test only: make the exe replacement fail
 #
 # The installer never needs administrator rights and never changes your PATH.
 
@@ -122,21 +123,36 @@ function Install-EveWallets {
         } catch {
             throw "could not write to $installDir ($($_.Exception.Message))"
         }
+        $aside = Join-Path $installDir ".eve-wallets.old.$PID.exe"
+        $movedAside = $false
         try {
-            if (Test-Path -LiteralPath $target) {
-                try {
-                    Copy-Item -LiteralPath $target -Destination "$target.bak-prev" -Force
-                } catch {
-                    throw "could not keep the previous binary as $target.bak-prev ($($_.Exception.Message))"
-                }
-            }
             try {
+                # Renaming the current exe fails fast when it is running/locked,
+                # before any existing backup is touched.
+                if (Test-Path -LiteralPath $target) {
+                    Move-Item -LiteralPath $target -Destination $aside -Force
+                    $movedAside = $true
+                }
+                if ($env:EVE_WALLETS_TEST_FAIL_REPLACE) { throw 'simulated failure' }
                 Move-Item -LiteralPath $staged -Destination $target -Force
             } catch {
-                throw "could not replace $target ($($_.Exception.Message)). If eve-wallets is running, stop it (Ctrl+C in its window, or Stop-Process -Name eve-wallets) and run the installer again."
+                $reason = $_.Exception.Message
+                if ($movedAside) {
+                    try { Move-Item -LiteralPath $aside -Destination $target -Force; $movedAside = $false } catch { }
+                }
+                throw "could not replace $target ($reason). If eve-wallets is running, stop it (Ctrl+C in its window, or Stop-Process -Name eve-wallets) and run the installer again."
+            }
+            if ($movedAside) {
+                try {
+                    Move-Item -LiteralPath $aside -Destination "$target.bak-prev" -Force
+                    $movedAside = $false
+                } catch {
+                    Write-Warning "installed, but could not keep the previous binary as $target.bak-prev ($($_.Exception.Message))"
+                }
             }
         } finally {
             if (Test-Path -LiteralPath $staged) { Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue }
+            if ($movedAside -and (Test-Path -LiteralPath $aside)) { Remove-Item -LiteralPath $aside -Force -ErrorAction SilentlyContinue }
         }
         Write-Host "installed $target ($version)"
     } finally {

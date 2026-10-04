@@ -114,6 +114,16 @@ run "unsupported architecture" 1 "unsupported architecture" INSTALL_DIR="$D3" EV
 
 run "missing asset" 1 "download failed" INSTALL_DIR="$WORK/inst-missing" VERSION=v7.7.7
 
+# A failed replacement must leave the installed exe and the older backup alone.
+D4="$WORK/inst-locked"
+run "seed install" 0 "installed" INSTALL_DIR="$D4"
+printf 'older backup\n' >"$D4/eve-wallets.exe.bak-prev"
+printf 'running exe\n' >"$D4/eve-wallets.exe"
+run "failed replace keeps backup and exe" 1 "stop it" INSTALL_DIR="$D4" EVE_WALLETS_TEST_FAIL_REPLACE=1
+[ "$(cat "$D4/eve-wallets.exe.bak-prev")" = "older backup" ] || { echo "FAIL old backup was overwritten"; fail=1; }
+[ "$(cat "$D4/eve-wallets.exe")" = "running exe" ] || { echo "FAIL installed exe was not restored"; fail=1; }
+ls "$D4"/.eve-wallets.* >/dev/null 2>&1 && { echo "FAIL temp file left behind"; fail=1; }
+
 # iex mode must not kill the host shell and must still report the error.
 rc=0
 out=$(env INSTALL_DIR="$WORK/inst-iex" VERSION=v7.7.7 EVE_WALLETS_RELEASE_BASE="$BASE" \
