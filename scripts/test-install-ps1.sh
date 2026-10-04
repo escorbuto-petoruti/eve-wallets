@@ -85,7 +85,8 @@ fail=0
 # Drop every variable install.ps1 reads so the caller's environment cannot leak into a case.
 clean_env() {
 	env -u VERSION -u INSTALL_DIR -u LOCALAPPDATA -u EVE_WALLETS_RELEASE_BASE \
-		-u EVE_WALLETS_TEST_ARCH -u EVE_WALLETS_TEST_FAIL_REPLACE "$@"
+		-u EVE_WALLETS_TEST_ARCH -u EVE_WALLETS_TEST_FAIL_REPLACE \
+		-u EVE_WALLETS_ADD_TO_PATH -u EVE_WALLETS_TEST_PATH_FILE "$@"
 }
 # run <name> <expected rc> <expected output substring> [ENV=VALUE ...]
 run() {
@@ -131,6 +132,20 @@ run "failed replace keeps backup and exe" 1 "stop it" INSTALL_DIR="$D4" EVE_WALL
 [ "$(cat "$D4/eve-wallets.exe.bak-prev")" = "older backup" ] || { echo "FAIL old backup was overwritten"; fail=1; }
 [ "$(cat "$D4/eve-wallets.exe")" = "running exe" ] || { echo "FAIL installed exe was not restored"; fail=1; }
 ls "$D4"/.eve-wallets.* >/dev/null 2>&1 && { echo "FAIL temp file left behind"; fail=1; }
+
+# PATH opt-in. EVE_WALLETS_TEST_PATH_FILE stands in for the user-scope PATH value.
+D5="$WORK/inst-path"
+PF="$WORK/userpath.txt"
+printf '/usr/bin' >"$PF"
+run "PATH default without a terminal changes nothing" 0 "not added" INSTALL_DIR="$D5" EVE_WALLETS_TEST_PATH_FILE="$PF"
+[ "$(cat "$PF")" = "/usr/bin" ] || { echo "FAIL PATH changed without consent"; fail=1; }
+run "PATH default prints how to add it" 0 "EVE_WALLETS_ADD_TO_PATH=1" INSTALL_DIR="$D5" EVE_WALLETS_TEST_PATH_FILE="$PF"
+run "PATH =0 never adds" 0 "not added" INSTALL_DIR="$D5" EVE_WALLETS_TEST_PATH_FILE="$PF" EVE_WALLETS_ADD_TO_PATH=0
+[ "$(cat "$PF")" = "/usr/bin" ] || { echo "FAIL PATH changed with =0"; fail=1; }
+run "PATH =1 adds the install dir" 0 "added $D5 to your user PATH" INSTALL_DIR="$D5" EVE_WALLETS_TEST_PATH_FILE="$PF" EVE_WALLETS_ADD_TO_PATH=1
+[ "$(cat "$PF")" = "/usr/bin;$D5" ] || { echo "FAIL PATH value: $(cat "$PF")"; fail=1; }
+run "PATH second run does not duplicate" 0 "already on your PATH" INSTALL_DIR="$D5/" EVE_WALLETS_TEST_PATH_FILE="$PF" EVE_WALLETS_ADD_TO_PATH=1
+[ "$(cat "$PF")" = "/usr/bin;$D5" ] || { echo "FAIL PATH duplicated: $(cat "$PF")"; fail=1; }
 
 # iex mode must not kill the host shell and must still report the error.
 rc=0
