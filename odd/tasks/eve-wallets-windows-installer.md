@@ -16,7 +16,7 @@ Windows only has manual steps in the README (download zip, `Get-FileHash`, unzip
 - The script must be testable against a local fake release like `install.sh` was, and any test must run on this Linux machine only if `pwsh` is available; otherwise say so honestly (never claim a Windows run that did not happen).
 
 ## Tasks
-- [~] W1 `install.ps1` + `scripts/test-install-ps1.sh` (fake release over python http.server; happy path, reinstall/bak-prev, checksum mismatch, arm64, missing asset, iex survival) + CI step. Written and committed (1f657b2) but NOT executed: no pwsh (no brew, snap needs root). No RED/GREEN observed. Left unchecked until the harness runs.
+- [x] W1 `install.ps1` + `scripts/test-install-ps1.sh` (fake release over python http.server; happy path, reinstall/bak-prev, checksum mismatch, arm64, missing asset, iex survival) + CI step. Written and committed (1f657b2). Executed afterwards on Linux with a user-space PowerShell 7.6.6 tarball: 6/6 harness cases ok on the first run (no RED stage: the script was written before pwsh was available). Mutation check: turning the checksum `throw` into a `Write-Host` made `installed despite mismatch` FAIL, then restored, so the harness is not vacuous.
 - [x] W2 (docs, no runner; structural readback) README: Install section for Windows (one-liner with `irm | iex` and the download-inspect-run variant), update-by-rerun note, remove the "Windows manual only" wording where it is now wrong, keep the not-verified list honest.
 
 ## Acceptance
@@ -32,5 +32,7 @@ Created 2026-10-04.
 - Not verified: everything about install.ps1 at runtime (pwsh 7, Windows PowerShell 5.1, real Windows, real GitHub redirect). Risk: CI step may fail on first run if the harness has a bug.
 - `cmd/eve-wallets/update.go` Windows message could point to `install.ps1` (out of the writer's surface).
 
+Still not verified: Windows PowerShell 5.1, a real Windows machine, the real GitHub redirect, and the CI step (ubuntu-latest shipping pwsh is assumed).
+
 ## Next step
-Run scripts/test-install-ps1.sh where pwsh exists (CI or a machine with it), fix any RED, then check W1.
+Push and PR; confirm the CI step passes on its first run; ideally one run of `install.ps1` on a real Windows machine.
