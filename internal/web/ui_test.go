@@ -142,3 +142,54 @@ func TestAppRendersCharactersFromMeWithoutInnerHTML(t *testing.T) {
 		t.Error("app.js must never use innerHTML")
 	}
 }
+
+// Characters and corporations get their own sections, built in JS.
+func TestIndexHasSectionsContainerAndSharedRange(t *testing.T) {
+	idx := asset(t, "index.html")
+	for _, want := range []string{`id="sections"`, `id="ranges"`, `role="group"`, `aria-label="Time range"`, `data-range="2592000"`} {
+		if !strings.Contains(idx, want) {
+			t.Errorf("index.html lacks %q", want)
+		}
+	}
+	// Per-owner widgets are created by app.js, so single-instance ids must be gone.
+	for _, gone := range []string{`id="picker"`, `id="chart"`, `id="total"`, `id="latest"`, `id="chart-card"`, `id="latest-card"`} {
+		if strings.Contains(idx, gone) {
+			t.Errorf("index.html still has the single-instance %s", gone)
+		}
+	}
+}
+
+func TestAppBuildsSectionsPerKindAndOwner(t *testing.T) {
+	js := asset(t, "app.js")
+	for _, want := range []string{
+		`"Characters"`,           // one section for all characters
+		`w.kind === "character"`, // split by kind
+		`w.owner_id`,             // one section per corporation
+		`w.owner_name`,           // titled with the owner name
+		"new Chart(",             // own chart per section
+		"MAX_IDS",                // 50-wallet cap kept
+		"section.token",          // own request token per section
+		"aria-label",             // unique canvas / range labels
+		"Total",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("app.js lacks %q", want)
+		}
+	}
+	for _, gone := range []string{`$("chart")`, `$("picker")`, `$("total")`, "state.chart", "state.token"} {
+		if strings.Contains(js, gone) {
+			t.Errorf("app.js still uses the single-chart %s", gone)
+		}
+	}
+	// Empty groups are never rendered: sections come only from existing wallets.
+	if !strings.Contains(js, "groupWallets") {
+		t.Error("app.js must build sections from grouped wallets only")
+	}
+}
+
+func TestAppDestroysSectionChartsOnSignOut(t *testing.T) {
+	js := asset(t, "app.js")
+	if !strings.Contains(js, ".destroy()") || !strings.Contains(js, "clearSections") {
+		t.Error("app.js must destroy every section chart when sections are cleared")
+	}
+}
