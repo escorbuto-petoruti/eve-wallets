@@ -33,6 +33,15 @@ The redirect URI is fixed at `http://localhost:8088/auth/callback`, so the serve
 - A session lasts 7 days. It is an `HttpOnly`, `SameSite=Lax` cookie with no `Secure` flag (plain http on localhost); only a hash of the session id is stored. "Sign out" in the page header ends it at once (a POST with a same-origin check). When the session expires the page asks you to sign in again.
 - Each person sees only the wallets their characters can read. A corporation wallet is shared by the characters of that corporation that proved access with their own token.
 
+### Adding characters
+
+A signed-in user can register more characters under the same account: use "Add character" in the page header and sign in with EVE SSO as the other character. Its personal wallet then appears next to the others, and the header lists all your characters. The login scopes are global: an added character is asked for the same scopes as any login.
+
+- A character that already belongs to another user is not taken silently. A confirmation page asks whether to move it. Only that character moves; the other user keeps its remaining characters and is deleted only when it is left with none.
+- After a move, the previous user's corporation wallet links are dropped. They come back with the next collection, so those wallets can look empty until that cycle completes (longer when ESI rate limits the run).
+- Signing in with a character that is attached to another user signs you in as its owner.
+- Pending confirmations live in memory for 10 minutes and are lost when `serve` restarts; add the character again if one expires.
+
 ## Usage
 
 | Command | What it does |
@@ -156,6 +165,7 @@ The tests use fakes (ESI and SSO) or a temporary SQLite database; `go test`, `go
 Not verified:
 
 - The real EVE SSO flow end to end: the redirect `http://localhost:8088/auth/callback` has to be registered for the embedded client id, and that has not been checked, nor has a real login been done.
+- The add and move character flow was tried by the owner in a real browser against the real EVE SSO (header, adding a character, moving one from another user, signing in with an attached character); it is covered by fakes and structural tests, not by an automated browser test.
 - The page (sign-in screen, header, sign out, session expiry, collecting state) in a real browser; its JavaScript has only structural tests and a syntax check.
 - The migration of the real v2 database to v3 (it is covered by a test on a generated v2 file).
 - The `serve` cycle that backfills the journal every time (and `--no-backfill`) is covered by fakes only; it has not been run against the real ESI.

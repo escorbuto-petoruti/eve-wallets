@@ -305,7 +305,7 @@ func parseTime(raw, name string) (time.Time, error) {
 
 // status scopes the last collection to the signed-in user. A skip or an
 // attributed error is shown only when the user can see its owner: their own
-// character, or a corporation of their linked wallets. An error without an
+// characters, or a corporation of their linked wallets. An error without an
 // owner identity is a run-level error (the collector process, not a user) and
 // is shown to every signed-in user; a skip without one is never shown (a skip
 // always belongs to someone, a missing identity is a bug). The counters stay
@@ -330,10 +330,19 @@ func (s *server) status(w http.ResponseWriter, r *http.Request, u store.User) {
 			corps[wl.OwnerID] = true
 		}
 	}
+	chars, err := s.deps.Store.CharactersForUser(r.Context(), u.UserID)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	own := make(map[int64]bool, len(chars))
+	for _, c := range chars {
+		own[c.CharacterID] = true
+	}
 	canSee := func(kind store.Kind, ownerID int64) bool {
 		switch kind {
 		case store.KindCharacter:
-			return ownerID == u.CharacterID // a character skip carries a character id
+			return own[ownerID] // a character skip carries a character id
 		case store.KindCorporation:
 			return corps[ownerID]
 		default:

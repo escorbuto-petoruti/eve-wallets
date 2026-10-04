@@ -395,6 +395,7 @@ func TestStatus(t *testing.T) {
 		RetryAfter:  90 * time.Second,
 	}
 	f := newFixture(t, func() StatusSnapshot { return StatusFromReport(rep) }, false)
+	f.saveChar(t, 1, 1, "Alice")
 	rec := do(f.h, http.MethodGet, "/api/status")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
@@ -558,6 +559,7 @@ func TestStatusScopesSkipsAndErrorsToUser(t *testing.T) {
 	snap.Errors = append(snap.Errors, ErrorItem{Message: "collection failed: boom"}) // run-level, no owner
 	f := newFixture(t, func() StatusSnapshot { return snap }, false)
 	f.addUser(t, 2, "Bob")
+	f.saveChar(t, 1, 1, "Alice")
 	ctx := context.Background()
 	charID, err := f.st.UpsertWallet(ctx, store.Wallet{Kind: store.KindCharacter, OwnerID: 1, OwnerName: "Alice"})
 	if err != nil {
@@ -643,6 +645,7 @@ func TestStatusScopesByUserIDNotCharacterID(t *testing.T) {
 	if err := f.st.UpsertUser(context.Background(), 7, "Dana", f.clock()); err != nil {
 		t.Fatal(err)
 	}
+	f.saveChar(t, 7, 1, "Alice")
 	corpID, err := f.st.UpsertWallet(context.Background(), store.Wallet{Kind: store.KindCorporation, OwnerID: 9, OwnerName: "Acme", Division: 1})
 	if err != nil {
 		t.Fatal(err)
@@ -660,5 +663,54 @@ func TestStatusScopesByUserIDNotCharacterID(t *testing.T) {
 	decode(t, rec, &got)
 	if len(got.Skipped) != 2 || got.Skipped[0].Owner != "Alice" || got.Skipped[1].Owner != "Acme" {
 		t.Errorf("skipped = %+v, want Alice (by character id) and Acme (by user id)", got.Skipped)
+	}
+}
+
+// saveChar registers a character under the user by storing its token.
+func (f *fixture) saveChar(t *testing.T, userID, charID int64, name string) {
+	t.Helper()
+	err := f.st.SaveToken(context.Background(), store.Token{
+		CharacterID: charID, UserID: userID, CharacterName: name, RefreshToken: "r-" + name, Scopes: []string{"s"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A character skip or error belongs to the user that owns the character, not
+// only to its primary one: added characters count, other users' do not.
+func TestStatusShowsSkipsAndErrorsOfAddedCharacters(t *testing.T) {
+	rep := collector.Report{
+		TakenAt: base,
+		Skipped: []collector.Skip{
+			{OwnerKind: store.KindCharacter, OwnerID: 1, Owner: "Alice", Reason: "primary skip", UserID: 1},
+			{OwnerKind: store.KindCharacter, OwnerID: 11, Owner: "Alice Alt", Reason: "added skip", UserID: 1},
+			{OwnerKind: store.KindCharacter, OwnerID: 22, Owner: "Bob Alt", Reason: "other user skip", UserID: 2},
+		},
+		Errors: []collector.ItemError{
+			{OwnerKind: store.KindCharacter, OwnerID: 11, Owner: "Alice Alt", Err: errBoom{}},
+			{OwnerKind: store.KindCharacter, OwnerID: 22, Owner: "Bob Alt", Err: errBoom{}},
+		},
+	}
+	f := newFixture(t, func() StatusSnapshot { return StatusFromReport(rep) }, false)
+	f.addUser(t, 2, "Bob")
+	f.saveChar(t, 1, 1, "Alice")
+	f.saveChar(t, 1, 11, "Alice Alt")
+	f.saveChar(t, 2, 22, "Bob Alt")
+
+	rec := do(f.h, http.MethodGet, "/api/status")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var got struct {
+		Skipped []struct{ Owner, Reason string } `json:"skipped"`
+		Errors  []string                         `json:"errors"`
+	}
+	decode(t, rec, &got)
+	if len(got.Skipped) != 2 || got.Skipped[0].Reason != "primary skip" || got.Skipped[1].Reason != "added skip" {
+		t.Errorf("skipped = %+v, want the primary and the added character skips only", got.Skipped)
+	}
+	if len(got.Errors) != 1 || got.Errors[0] != "Alice Alt: boom" {
+		t.Errorf("errors = %q, want only the added character error", got.Errors)
 	}
 }

@@ -248,8 +248,28 @@ func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
+type meCharacter struct {
+	CharacterID int64  `json:"character_id"`
+	Name        string `json:"name"`
+}
+
+// me answers the signed-in user: the primary character (character_id, name)
+// and every character registered under the user.
 func (s *server) me(w http.ResponseWriter, r *http.Request, u store.User) {
-	writeJSON(w, r, http.StatusOK, map[string]any{"character_id": u.CharacterID, "name": u.Name})
+	chars, err := s.deps.Store.CharactersForUser(r.Context(), u.UserID)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	list := make([]meCharacter, 0, len(chars))
+	for _, c := range chars {
+		list = append(list, meCharacter{CharacterID: c.CharacterID, Name: c.Name})
+	}
+	writeJSON(w, r, http.StatusOK, struct {
+		CharacterID int64         `json:"character_id"`
+		Name        string        `json:"name"`
+		Characters  []meCharacter `json:"characters"`
+	}{u.CharacterID, u.Name, list})
 }
 
 func clearCookie(w http.ResponseWriter, name, path string) {
