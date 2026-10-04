@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -241,10 +242,18 @@ func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 		errorPage(w, http.StatusForbidden, "Cross-site sign-out refused.")
 		return
 	}
+	var deleteErr error
 	if c, err := r.Cookie(sessionCookie); err == nil && c.Value != "" {
-		_ = s.deps.Store.DeleteSession(r.Context(), hashSession(c.Value))
+		deleteErr = s.deps.Store.DeleteSession(r.Context(), hashSession(c.Value))
 	}
 	clearCookie(w, sessionCookie, "/")
+	if deleteErr != nil {
+		// The cookie is cleared, but the server session survives: do not
+		// tell the user they signed out.
+		log.Printf("web: sign-out: delete session: %v", deleteErr)
+		errorPage(w, http.StatusInternalServerError, "Sign-out failed. Please try again.")
+		return
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
