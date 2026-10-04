@@ -2,28 +2,82 @@
 
 A local web app that charts the evolution of the EVE Online wallets you can read: the personal wallet of each character that signed in, plus the corporation wallet divisions that character can read.
 
+> eve-wallets is not affiliated with or endorsed by CCP Games. EVE Online and the related marks and logos are trademarks of CCP hf.
+
 It is meant to be installed locally: one process on your machine, one SQLite file per person, reachable only from loopback. You sign in on the page with EVE SSO; there is no other binary to install and no EVE application to register yourself.
 
 ESI only returns the current balance and 30 days of wallet journal. To get a longer history the app snapshots balances periodically, and it backfills the last 30 days from the journal.
 
 ## Requirements
 
-- Go (version in `go.mod`).
-- An EVE Online account. The sign-in uses an EVE application (a PKCE public client, embedded id) whose callback is `http://localhost:8088/auth/callback`.
+- Go (version in `go.mod`) only if you build from source; the release archives are self-contained.
+- An EVE Online account. The sign-in uses a shared EVE application (a PKCE public client, embedded id) whose only redirect is `http://localhost:8088/auth/callback` (see [Sign-in and port 8088](#sign-in-and-port-8088)).
 - For corporation wallets, the character needs the in-game role Accountant or Junior_Accountant. Without it the corporation wallet is skipped (reported as `missing corporation role`), not an error.
 
 `eve-auth` is no longer needed or used. Earlier versions took tokens from that CLI and required `EVE_AUTH_BIN` and `EVE_CLIENT_ID`; both variables are ignored now.
 
+## Install
+
+Binaries are published as GitHub releases for linux, darwin (macOS) and windows. Each release has one archive per platform and a `checksums.txt`:
+
+| Platform | Archive |
+|----------|---------|
+| Linux | `eve-wallets_<version>_linux_amd64.tar.gz`, `eve-wallets_<version>_linux_arm64.tar.gz` |
+| macOS | `eve-wallets_<version>_darwin_amd64.tar.gz`, `eve-wallets_<version>_darwin_arm64.tar.gz` |
+| Windows | `eve-wallets_<version>_windows_amd64.zip` |
+
+`<version>` is the tag without the leading `v`. Each archive holds the binary (`eve-wallets`, `eve-wallets.exe` on Windows), `LICENSE` and `README.md`.
+
+### Installer script (Linux and macOS)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/escorbuto-petoruti/eve-wallets/main/install.sh | sh
+```
+
+It picks your platform, downloads the latest release, verifies its SHA-256 against `checksums.txt` and installs the binary to `~/.local/bin` (never with sudo). Options: `VERSION=vX.Y.Z` installs a specific release, `INSTALL_DIR=DIR` another directory, and `--systemd` also installs the user service described [below](#run-as-a-systemd-user-service). An existing binary is kept as `eve-wallets.bak-prev`.
+
+If you prefer to read it before running it:
+
+```bash
+curl -fsSL -o install.sh https://raw.githubusercontent.com/escorbuto-petoruti/eve-wallets/main/install.sh
+less install.sh
+sh install.sh
+```
+
+### Manual download (all platforms)
+
+Download the archive for your platform and `checksums.txt` from the releases page, then verify and extract it:
+
+```bash
+sha256sum --ignore-missing -c checksums.txt   # macOS: shasum -a 256 -c checksums.txt
+tar -xzf eve-wallets_<version>_linux_amd64.tar.gz
+```
+
+On Windows, check the hash with `Get-FileHash <archive> -Algorithm SHA256`, compare it with the line in `checksums.txt`, and unzip. Put the binary somewhere on your `PATH`.
+
+### From source
+
+```bash
+go install github.com/escorbuto-petoruti/eve-wallets/cmd/eve-wallets@latest
+# or, from a checkout:
+go build -o eve-wallets ./cmd/eve-wallets
+```
+
+A source build reports the version `dev`.
+
 ## Run it
 
 ```bash
-go build -o eve-wallets ./cmd/eve-wallets
-./eve-wallets serve
+eve-wallets serve
 ```
 
-Open <http://localhost:8088> and choose "Sign in with EVE SSO".
+Open <http://localhost:8088> and choose "Sign in with EVE SSO". `eve-wallets version` prints the installed version.
 
-The redirect URI is fixed at `http://localhost:8088/auth/callback`, so the server has to listen on port 8088 (the default `--addr 127.0.0.1:8088`). With another port `serve` still starts but prints a warning, because SSO login will not work.
+### Sign-in and port 8088
+
+The app uses a shared EVE application whose only registered redirect is `http://localhost:8088/auth/callback`, so the server has to listen on port 8088 (the default `--addr 127.0.0.1:8088`). With another port `serve` still starts but prints a warning, because SSO login will not work.
+
+To use your own application instead, register one at <https://developers.eveonline.com> with the callback `http://localhost:8088/auth/callback` and the scopes listed under [Signing in](#signing-in), and start the app with its client id in `EVE_WALLETS_CLIENT_ID`. The callback stays fixed, so port 8088 is still required. The variable has to be set for every command that refreshes tokens (`serve`, `collect`, `backfill`), and characters that signed in with the shared application have to sign in again.
 
 ### Signing in
 
@@ -51,6 +105,8 @@ A signed-in user can register more characters under the same account: use "Add c
 | `eve-wallets backfill [--db PATH]` | Stores journal balances of the last 30 days. Idempotent. `serve` runs it every cycle unless `--no-backfill` is given, so run it by hand only for a one-off backfill without `serve`. |
 | `eve-wallets wallets [--db PATH]` | Lists the wallets (id, kind, owner, division, displayed name and its source). No network. |
 | `eve-wallets label [--db PATH] <wallet-id> <name...>` | Sets the name shown for a wallet. `--clear <wallet-id>` removes it. |
+| `eve-wallets version` | Prints `eve-wallets <version>` (also `--version`). |
+| `eve-wallets update [--check] [--force]` | Updates the binary to the latest release (Linux and macOS), see [Update](#update). |
 
 `collect` and `backfill` use the characters that already signed in through the page. With none registered they print a hint to run `eve-wallets serve`, sign in, and exit with code 1. `wallets` and `label` only read or write the database.
 
@@ -61,13 +117,13 @@ A signed-in user can register more characters under the same account: use "Add c
 - `--no-collect`: serve existing data without calling ESI (a login then does not trigger a collection).
 - `--no-backfill`: each cycle only takes snapshots (like `collect`) and does not read the journals. The cycle skips the backfill by itself when its snapshot was rate limited.
 
-Environment variable: `EVE_WALLETS_DB` is the database path (the `--db` flag wins).
+Environment variables: `EVE_WALLETS_DB` is the database path (the `--db` flag wins); `EVE_WALLETS_CLIENT_ID` replaces the embedded EVE client id (see [Sign-in and port 8088](#sign-in-and-port-8088)).
 
 Default database: `$XDG_DATA_HOME/eve-wallets/wallets.db`, else `~/.local/share/eve-wallets/wallets.db`. The directory is created with mode 0700 and the database files (including `-wal` and `-shm`) with 0600.
 
 ### Run as a systemd user service
 
-Not run in the development environment; adjust the path to where you installed the binary.
+On Linux, a user service keeps `serve` running in the background and restarts it if it fails. Adjust the path if you installed the binary somewhere else (`%h` is your home directory).
 
 ```ini
 # ~/.config/systemd/user/eve-wallets.service
@@ -87,17 +143,35 @@ systemctl --user daemon-reload
 systemctl --user enable --now eve-wallets
 ```
 
-No `PATH` entry or environment file is needed.
+No `PATH` entry or environment file is needed. After an update, restart it with `systemctl --user restart eve-wallets`.
 
-## Upgrading to the sign-in version (schema v3)
+On macOS you can run the same command from a launchd agent, and on Windows you can run `eve-wallets.exe serve` in a terminal. Neither was tested.
 
-The database schema is migrated automatically when the app opens it, and a binary older than the database refuses to open it. This version migrates a v2 file to v3 (users, tokens, per-user wallet links, sessions). After that an older binary cannot open the file, so stop the app and copy the database file before the first run of the new binary, so you can go back:
+## Update
 
 ```bash
-cp ~/.local/share/eve-wallets/wallets.db ~/.local/share/eve-wallets/wallets.db.bak-v2
+eve-wallets update           # download, verify and replace the binary
+eve-wallets update --check   # only report whether a newer release exists
 ```
 
-Existing wallets are linked to a user on the first collection cycle of a character whose token can read them, so nobody sees old data until they sign in and that cycle runs.
+`update` (Linux and macOS) asks GitHub for the latest release, downloads the archive for your platform and `checksums.txt`, verifies the SHA-256, and replaces the running executable atomically, keeping the previous one as `eve-wallets.bak-prev` next to it. Then restart the service. A `dev` build (from source) refuses to update unless you pass `--force`. On Windows, `update` prints the manual steps: download the new zip, verify it and replace the binary. You can always update manually by downloading the archive as in [Install](#install).
+
+`update` never touches the database.
+
+### Backups and rollback
+
+The schema is migrated automatically when the app opens the database, and a binary older than the database refuses to open it. So before it applies a migration, the new binary writes a consistent copy of the database next to it, `wallets.db.bak-v<N>`, where `<N>` is the schema version the database had (mode 0600; an existing backup of that version is never overwritten). If the backup cannot be written, the app stops with an error before touching the database.
+
+To roll back: stop the app, restore the backup and the previous binary.
+
+```bash
+cd ~/.local/share/eve-wallets
+rm -f wallets.db-wal wallets.db-shm
+cp wallets.db.bak-v<N> wallets.db
+mv ~/.local/bin/eve-wallets.bak-prev ~/.local/bin/eve-wallets
+```
+
+Data collected after the migration is lost by restoring. Existing wallets are linked to a user on the first collection cycle of a character whose token can read them, so after the upgrade to the sign-in version (schema v3) nobody sees old data until they sign in and that cycle runs.
 
 ## The page
 
@@ -172,7 +246,7 @@ Division names come from ESI during collection. The login already requests the s
 
 ## Architecture
 
-- `cmd/eve-wallets`: CLI (`serve`, `collect`, `backfill`, `wallets`, `label`) and wiring.
+- `cmd/eve-wallets`: CLI (`serve`, `collect`, `backfill`, `wallets`, `label`, `version`, `update`) and wiring.
 - `internal/store`: SQLite (pure Go, `modernc.org/sqlite`) schema, migrations, users, tokens, sessions, wallet names and series queries.
 - `internal/esi`: ESI client (ETag cache, wallets, journals, division names, loyalty points, universe names).
 - `internal/sso`: EVE SSO client (PKCE, JWT validation) with the embedded client id and scopes.
@@ -182,6 +256,8 @@ Division names come from ESI during collection. The login already requests the s
 - `internal/web`: sign-in, sessions, user-scoped JSON API and embedded page.
 
 ## Development
+
+Releases are built by `.github/workflows/release.yml` when a `v*` tag is pushed; CI (`ci.yml`) runs gofmt, vet and tests.
 
 ```bash
 go test ./...
@@ -205,4 +281,5 @@ Not verified:
 - The division names path was run against the real ESI only with a character that is not a Director. The case where a Director receives the names (stored with source `esi`, and cleared for divisions that return to the default name) is covered by fakes only.
 - Loyalty points: the collection, the API and the page are covered by fakes, a temporary SQLite database and literal-string UI checks only; no real ESI call was made, the migration of the real database to v5 was not run, and the tab was not opened in a browser.
 - Loyalty history: the migration to v6, the append-on-change logic and the API are covered by temporary SQLite databases and in-process HTTP tests only; the real database was not migrated and no real ESI call was made.
-- The systemd unit above.
+- The systemd unit above, and running on macOS or Windows at all (only linux/amd64 was built and run here; the other platforms were only cross-compiled).
+- The release workflow, `install.sh` and `eve-wallets update` against real GitHub releases: they were only tested against local fake releases.
