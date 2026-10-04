@@ -179,6 +179,19 @@ var migrations = []string{
 		expires_at INTEGER NOT NULL
 	);
 	CREATE INDEX sessions_expires ON sessions (expires_at);`,
+	// 6: the wallet journal. date is unix seconds, amount_cents is signed
+	// integer cents; (wallet_id, entry_id) makes inserts idempotent.
+	`CREATE TABLE journal (
+		id           INTEGER PRIMARY KEY,
+		wallet_id    INTEGER NOT NULL REFERENCES wallets(id) ON DELETE CASCADE,
+		entry_id     INTEGER NOT NULL,
+		date         INTEGER NOT NULL,
+		amount_cents INTEGER NOT NULL,
+		ref_type     TEXT    NOT NULL,
+		description  TEXT    NOT NULL,
+		UNIQUE (wallet_id, entry_id)
+	);
+	CREATE INDEX journal_wallet_date ON journal (wallet_id, date DESC, entry_id DESC);`,
 }
 
 // Store is a SQLite-backed wallet history.

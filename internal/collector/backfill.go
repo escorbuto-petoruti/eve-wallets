@@ -20,6 +20,9 @@ type BackfillWallet struct {
 	// already stored; NoBalance counts entries ESI returned without a balance.
 	Points    int
 	NoBalance int
+	// NewEntries is the number of journal entries stored for the first time
+	// (movements shown in the UI); entries already stored are not counted.
+	NewEntries int
 }
 
 // BackfillReport is the outcome of one backfill. It never contains a token.
@@ -51,8 +54,21 @@ func (r BackfillReport) NoBalance() int {
 	return n
 }
 
+// NewEntries returns the journal entries stored for the first time overall.
+func (r BackfillReport) NewEntries() int {
+	n := 0
+	for _, w := range r.Wallets {
+		n += w.NewEntries
+	}
+	return n
+}
+
 // Backfill stores the running balance of every wallet journal entry ESI still
-// holds (about 30 days) as a historical point. It follows the same discovery
+// holds (about 30 days) as a historical point, and persists every journal entry
+// (amount, type, description) in the journal table. Each pass fetches the full
+// available journal and inserts what is missing, so a wallet with no stored
+// journal rows is filled completely by its first pass and later passes only add
+// new entries; no separate one-time flag is needed. It follows the same discovery
 // rules as Run and is idempotent: repeating it changes nothing. It returns an
 // error only when the character list is unavailable or the context ends.
 func (c *Collector) Backfill(ctx context.Context) (BackfillReport, error) {
@@ -121,5 +137,21 @@ func (w *walker) backfillWallet(ctx context.Context, rep *BackfillReport, wl sto
 		}
 		out.Points++
 	}
+	// The journal is persisted after the balances and independently of them: a
+	// failure here is recorded but never undoes or blocks the balance points.
+	n, err := w.c.deps.Store.AddJournalEntries(ctx, id, journalRows(entries))
+	if err != nil {
+		w.fail(wl.Kind, wl.OwnerID, label, err)
+	}
+	out.NewEntries = n
 	rep.Wallets = append(rep.Wallets, out)
+}
+
+// journalRows converts ESI entries to store rows.
+func journalRows(entries []esi.JournalEntry) []store.JournalEntry {
+	rows := make([]store.JournalEntry, len(entries))
+	for i, e := range entries {
+		rows[i] = store.JournalEntry{ID: e.ID, Date: e.Date, AmountCents: e.AmountCents, RefType: e.RefType, Description: e.Description}
+	}
+	return rows
 }

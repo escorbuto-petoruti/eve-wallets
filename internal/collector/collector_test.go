@@ -131,6 +131,10 @@ type fakeStore struct {
 	points     map[[2]int64]point
 	journalErr error
 
+	// journal rows keyed by wallet id and entry id; entriesErr fails the write.
+	journal    map[[2]int64]store.JournalEntry
+	entriesErr error
+
 	// esiNames holds the stored ESI name per wallet id; nameCalls counts writes.
 	esiNames  map[int64]string
 	nameCalls int
@@ -158,6 +162,24 @@ func (s *fakeStore) AddJournalBalance(_ context.Context, id, entry int64, at tim
 		s.points[k] = point{at: at, cents: cents}
 	}
 	return nil
+}
+
+func (s *fakeStore) AddJournalEntries(_ context.Context, id int64, entries []store.JournalEntry) (int, error) {
+	if s.entriesErr != nil {
+		return 0, s.entriesErr
+	}
+	if s.journal == nil {
+		s.journal = make(map[[2]int64]store.JournalEntry)
+	}
+	added := 0
+	for _, e := range entries {
+		k := [2]int64{id, e.ID}
+		if _, ok := s.journal[k]; !ok {
+			s.journal[k] = e
+			added++
+		}
+	}
+	return added, nil
 }
 
 func (s *fakeStore) SetESIName(_ context.Context, id int64, name string) error {

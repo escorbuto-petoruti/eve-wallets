@@ -60,8 +60,8 @@ func TestMigrationUpgradesV2DatabaseToV3(t *testing.T) {
 	defer s.Close()
 
 	var version int
-	if err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil || version != 3 {
-		t.Fatalf("user_version = %d, err = %v, want 3", version, err)
+	if err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil || version != len(migrations) {
+		t.Fatalf("user_version = %d, err = %v, want %d", version, err, len(migrations))
 	}
 	got, err := s.LatestBalances(ctx)
 	if err != nil || len(got) != 2 || got[0].Cents != 500 || got[0].Wallet.Label != "Main" || got[1].Cents != 900 {
