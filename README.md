@@ -111,7 +111,7 @@ Corporation divisions are shown as `<corporation> · <name>` and the character w
 2. the division name reported by ESI (source `esi`),
 3. the default: `Division N` for a corporation wallet, the character name for a character wallet (source `default`).
 
-A label is never overwritten by a collection. Rename from the CLI; the page shows the change when you refresh it (the only write endpoint of the HTTP API is sign out):
+A label is never overwritten by a collection. Rename from the page (below) or from the CLI. The page shows a CLI change when you refresh it:
 
 ```bash
 ./eve-wallets wallets                       # find the wallet id
@@ -120,6 +120,14 @@ A label is never overwritten by a collection. Rename from the CLI; the page show
 ```
 
 A name is 1-64 characters without control characters. `--db` goes before the wallet id, and an unknown or invalid id exits with code 1.
+
+### Renaming from the page
+
+Each corporation wallet panel has a **Rename** button. It opens a field with Save, Cancel and, when the wallet has your own name, **Reset name** (back to the ESI name or `Division N`). Saving an empty name also resets it. The new name shows in the panel title and the latest balances table without reloading the page.
+
+These wallets cannot be renamed on the page, and the server refuses the request too (HTTP 403): character wallets, the corporation Master Wallet (division 1), and divisions whose name comes from ESI. A name is stored per wallet, so everyone who can see that wallet sees it.
+
+The page calls `POST /api/wallets/{id}/label` with `{"name": "..."}`. It needs your session, a same-origin request (the same check as sign-out) and `Content-Type: application/json`. A wallet you cannot see answers 404, an invalid name 400. It returns `{"id", "name", "name_source"}`.
 
 Division names come from ESI during collection. The login already requests the scope `esi-corporations.read_divisions.v1`, and ESI needs the in-game role Director for it. Without the scope nothing is requested. With the scope but without the Director role, the collection reports `missing Director role` as a skipped item (not an error). In both cases `Division N` or your labels are shown. Your own labels win over ESI names, so run `eve-wallets label --clear <wallet-id>` to see the ESI name of a division you already renamed. ESI only returns the divisions whose name is not the default, and the in-game default division names were not verified, so the fallback is `Division N`.
 
