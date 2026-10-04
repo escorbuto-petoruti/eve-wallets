@@ -23,3 +23,5 @@ Show how each wallet evolves: replace the single shared-axis line chart with one
 ## Progress / evidence
 - Route T1: delegated writer (2 non-trivial files: app.js + style.css).
 - T1/T2 done (uncommitted): panels in app.js/style.css; ui_test.go updated + TestAppBuildsSmallMultiplePanels; gofmt/vet/test green.
+
+- Commit: e371429 (feat(web): show one chart panel per wallet). Spot check: go test ./... green. Not run in a browser; no RED test was written first (the new test was added after the implementation).
