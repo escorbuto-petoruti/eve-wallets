@@ -41,6 +41,7 @@
     <p id="empty-text" class="bad"></p>
   </section>
 
+  <div id="tabs" class="tabs" role="tablist" aria-label="Wallets and loyalty points" hidden></div>
   <section id="controls" class="card" hidden>
     <h2>Time range</h2>
     <div id="ranges" role="group" aria-label="Time range">
@@ -51,10 +52,9 @@
     </div>
   </section>
 
-  <div id="tabs" class="tabs" role="tablist" aria-label="Wallet owners" hidden></div>
   <div id="sections"></div>
 
-  <section id="loyalty-card" class="card" aria-labelledby="loyalty-title" hidden>
+  <section id="loyalty-panel" class="card" role="tabpanel" aria-labelledby="tab-loyalty" hidden>
     <h2 id="loyalty-title">Loyalty points</h2>
     <p id="loyalty-status" class="muted" role="status" aria-live="polite"></p>
     <div id="loyalty"></div>

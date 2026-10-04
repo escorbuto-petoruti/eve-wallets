@@ -8,7 +8,8 @@
   var TOTAL_COLOR = "#e9f0f6";
   var MAX_IDS = 50; // keep in sync with the server cap
 
-  var state = { wallets: [], range: 2592000, sections: [], active: null, loyaltyToken: 0 };
+  var state = { wallets: [], range: 2592000, sections: [], active: null, loyaltyToken: 0, lpTab: null, lpActive: false, lpLoadedAt: 0, lpLoading: false, hasData: false };
+  var LP_STALE_MS = 60000; // reopening the loyalty tab refreshes data older than this
 
   var $ = function (id) { return document.getElementById(id); };
 
@@ -91,6 +92,9 @@
     stopPolling();
     clearSections();
     clearLoyalty();
+    state.hasData = false;
+    $("controls").hidden = true;
+    $("tabs").hidden = true;
     $("signed-in").hidden = true;
     $("user-bar").hidden = true;
     $("session-message").textContent = message || "";
@@ -105,6 +109,7 @@
     $("characters").textContent = (me.characters || []).map(function (c) { return c.name; }).join(", ");
     $("user-bar").hidden = false;
     $("signed-in").hidden = false;
+    $("tabs").hidden = false;
   }
 
   var MAX_NAME = 64; // keep in sync with the server limit
@@ -152,12 +157,35 @@
     state.sections.forEach(function (s) {
       s.token++; // drop late responses
       destroyCharts(s);
+      s.tab.remove();
     });
     state.sections = [];
     state.active = null;
-    $("tabs").replaceChildren();
-    $("tabs").hidden = true;
     $("sections").replaceChildren();
+    syncLoyaltyTab();
+  }
+
+  // makeTab builds one tab button of the shared tablist (owners and loyalty).
+  function makeTab(id, label, panelId, onClick) {
+    var tab = el("button", label, "tab");
+    tab.type = "button";
+    tab.id = id;
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-controls", panelId);
+    tab.setAttribute("aria-selected", "false");
+    tab.tabIndex = -1;
+    tab.addEventListener("click", onClick);
+    return tab;
+  }
+
+  // The loyalty tab is the last tab of the bar; owner tabs go before it.
+  function syncLoyaltyTab() {
+    state.lpTab.setAttribute("aria-selected", state.lpActive ? "true" : "false");
+    // Keep one tab in the tab order even when there are no owner tabs.
+    state.lpTab.tabIndex = state.lpActive || !state.sections.length ? 0 : -1;
+    $("loyalty-panel").hidden = !state.lpActive;
+    // Time ranges do not apply to loyalty points.
+    $("controls").hidden = state.lpActive || !state.hasData;
   }
 
   function buildSection(group, idx) {
@@ -168,18 +196,11 @@
     card.setAttribute("aria-labelledby", "tab-" + idx);
     card.hidden = true;
     section.panel = card;
-    var tab = el("button", group.title, "tab");
-    tab.type = "button";
-    tab.id = "tab-" + idx;
-    tab.setAttribute("role", "tab");
-    tab.setAttribute("aria-controls", card.id);
-    tab.setAttribute("aria-selected", "false");
-    tab.tabIndex = -1;
-    tab.addEventListener("click", function () { activateSection(section); });
+    var tab = makeTab("tab-" + idx, group.title, card.id, function () { activateSection(section); });
     section.tab = tab;
     var tabLogo = eveImage("corporation", group.corpId, 24);
     if (tabLogo) { tab.insertBefore(tabLogo, tab.firstChild); }
-    $("tabs").appendChild(tab);
+    $("tabs").insertBefore(tab, state.lpTab);
     var title = el("h2", group.title);
     var titleLogo = eveImage("corporation", group.corpId, 32);
     if (titleLogo) { title.insertBefore(titleLogo, title.firstChild); }
@@ -240,12 +261,41 @@
       s.tab.tabIndex = on ? 0 : -1;
     });
     state.active = section;
+    state.lpActive = false;
+    syncLoyaltyTab();
     refreshChart(section);
   }
 
+  // activateLoyalty shows the loyalty panel and loads it the first time, or
+  // again when it never loaded or is older than LP_STALE_MS.
+  function activateLoyalty() {
+    state.sections.forEach(function (s) {
+      s.token++;
+      destroyCharts(s);
+      s.drawn = false;
+      s.panel.hidden = true;
+      s.tab.setAttribute("aria-selected", "false");
+      s.tab.tabIndex = -1;
+    });
+    state.active = null;
+    state.lpActive = true;
+    syncLoyaltyTab();
+    if (!state.lpLoading && (!state.lpLoadedAt || Date.now() - state.lpLoadedAt > LP_STALE_MS)) { loadLoyalty(); }
+  }
+
+  // Every tab of the bar in order: owners, then loyalty points.
+  function allTabs() {
+    var list = state.sections.map(function (s) {
+      return { tab: s.tab, go: function () { activateSection(s); } };
+    });
+    list.push({ tab: state.lpTab, go: activateLoyalty });
+    return list;
+  }
+
   function onTabKey(ev) {
-    var n = state.sections.length;
-    var i = state.sections.findIndex(function (s) { return s.tab === ev.target; });
+    var tabs = allTabs();
+    var n = tabs.length;
+    var i = tabs.findIndex(function (t) { return t.tab === ev.target; });
     if (i < 0 || n === 0) { return; }
     var next;
     if (ev.key === "ArrowRight") { next = (i + 1) % n; }
@@ -254,20 +304,21 @@
     else if (ev.key === "End") { next = n - 1; }
     else { return; }
     ev.preventDefault();
-    activateSection(state.sections[next]);
-    state.sections[next].tab.focus();
+    tabs[next].go();
+    tabs[next].tab.focus();
   }
 
-  // The selected tab survives a reload while its owner still exists.
+  // The selected tab survives a reload while its owner still exists; an active
+  // loyalty tab stays active.
   function renderSections() {
     var prev = state.active ? state.active.group.key : null;
     clearSections();
     groupWallets(state.wallets).forEach(function (g, i) {
       state.sections.push(buildSection(g, i));
     });
+    if (state.lpActive) { activateLoyalty(); return; }
     if (!state.sections.length) { return; }
     var pick = state.sections.find(function (s) { return s.group.key === prev; }) || state.sections[0];
-    $("tabs").hidden = state.sections.length < 2;
     activateSection(pick);
   }
 
@@ -277,10 +328,13 @@
   // response is dropped.
   function clearLoyalty() {
     state.loyaltyToken++;
+    state.lpActive = false;
+    state.lpLoadedAt = 0;
+    state.lpLoading = false;
     $("loyalty").replaceChildren();
     $("loyalty-status").textContent = "";
     $("loyalty-status").className = "muted";
-    $("loyalty-card").hidden = true;
+    syncLoyaltyTab();
   }
 
   function setLoyaltyStatus(text, cls) {
@@ -352,12 +406,17 @@
 
   function loadLoyalty() {
     var token = ++state.loyaltyToken;
-    $("loyalty-card").hidden = false;
+    state.lpLoading = true;
     setLoyaltyStatus("Loading loyalty points…", "muted");
     getJSON("/api/loyalty").then(function (resp) {
-      if (token === state.loyaltyToken) { renderLoyalty(resp); }
+      if (token === state.loyaltyToken) {
+        state.lpLoading = false;
+        state.lpLoadedAt = Date.now();
+        renderLoyalty(resp);
+      }
     }).catch(function (err) {
       if (!err.unauthorized && token === state.loyaltyToken) {
+        state.lpLoading = false;
         $("loyalty").replaceChildren();
         setLoyaltyStatus("Cannot load loyalty points: " + err.message, "bad");
       }
@@ -870,6 +929,9 @@
   }
 
   function init() {
+    state.lpTab = makeTab("tab-loyalty", "Loyalty points", "loyalty-panel", activateLoyalty);
+    $("tabs").appendChild(state.lpTab);
+    syncLoyaltyTab();
     $("tabs").addEventListener("keydown", onTabKey);
     document.querySelectorAll("#ranges button").forEach(function (b) {
       b.addEventListener("click", function () { setRange(b); });
@@ -877,7 +939,6 @@
 
     getJSON("/api/me").then(function (me) {
       showSignedIn(me);
-      loadLoyalty();
       loadWallets(0, POLL_FIRST_MS);
     }).catch(function (err) {
       if (err.unauthorized) { return; } // the signed-out view is already shown
@@ -905,10 +966,10 @@
       if (hasData) {
         $("collecting").hidden = true;
         $("empty").hidden = true;
-        $("controls").hidden = false;
-        renderSections();
+        state.hasData = true;
         // The first collection finished while polling: the stored points are new.
-        if (tries > 0) { loadLoyalty(); }
+        if (tries > 0) { state.lpLoadedAt = 0; }
+        renderSections();
         return;
       }
       $("collecting").hidden = false;
