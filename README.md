@@ -110,6 +110,13 @@ The page has a **Loyalty points** card with, per character, a table of corporati
 - **Existing characters must sign in again.** Tokens saved before this version lack the scope, so the collector records the skip `missing scope esi-characters.read_loyalty.v1` and the page shows a "Sign in again" notice for that character instead of a table (use "Add character" or the notice link and pick the character on the EVE login screen). ISK wallets, journals and renames keep working without the new scope.
 - A 403 from ESI is the same skip; any other failure is an error of that character and the stored snapshot is kept.
 - `GET /api/loyalty` (GET only, needs your session) returns `{"characters": [{"character_id", "character_name", "fetched_at", "needs_reauth", "corporations": [{"corporation_id", "name", "points"}]}]}` for your own characters only, corporations by points descending. `fetched_at` is unix seconds, `null` when nothing is stored. `needs_reauth` is true when the token lacks the scope, and its `corporations` list is empty.
+### Loyalty history
+
+ESI has no loyalty history, so it is recorded from now on in the append-only table `loyalty_history` (schema v6, created in place). In the same transaction as each snapshot replacement the collector appends a row `(character, corporation, taken_at, points)` only when the points differ from the last stored value of that pair (or there is none), so repeated collections store nothing. When ESI stops returning a corporation that had points, a single row with `0` is appended and no more follow until it changes again. Rows are removed with the character's token and survive a token move.
+
+- It records from the first collection after you deploy this version. The migration seeds the history with the current `loyalty_points` values (`taken_at` = their `fetched_at`), so nothing already collected is lost, but earlier evolution cannot be recovered.
+- `GET /api/loyalty/history?character_id=&corporation_id=&from=&to=&limit=&cursor=` (GET only, needs your session) returns `{"character_id", "points": [{"corporation_id", "name", "taken_at", "points"}], "next_cursor"}` ordered by `taken_at` and then `corporation_id` ascending. `character_id` is required and must be one of your own characters (otherwise 404); `corporation_id` is optional; `from` and `to` are inclusive RFC 3339 times; `limit` is 1 to 2000 (default 500). When more rows exist `next_cursor` is an opaque value to pass back as `cursor`; it is `null` on the last page. `taken_at` is unix seconds, names fall back to `Corp <id>`, and bad parameters answer 400. There is no page or chart for it yet.
+
 - Not available: ESI has no endpoint for corporation loyalty points, and PLEX and event marks are not exposed by ESI as a wallet, so only character loyalty points are shown.
 
 ## Movements
@@ -197,4 +204,5 @@ Not verified:
 - The `serve` cycle that backfills the journal every time (and `--no-backfill`) is covered by fakes only; it has not been run against the real ESI.
 - The division names path was run against the real ESI only with a character that is not a Director. The case where a Director receives the names (stored with source `esi`, and cleared for divisions that return to the default name) is covered by fakes only.
 - Loyalty points: the collection, the API and the page are covered by fakes, a temporary SQLite database and literal-string UI checks only; no real ESI call was made, the migration of the real database to v5 was not run, and the card was not opened in a browser.
+- Loyalty history: the migration to v6, the append-on-change logic and the API are covered by temporary SQLite databases and in-process HTTP tests only; the real database was not migrated and no real ESI call was made.
 - The systemd unit above.

@@ -206,3 +206,72 @@ func (s *Store) ScopesForUser(ctx context.Context, userID int64) (map[int64][]st
 	}
 	return out, rows.Err()
 }
+
+// LoyaltyHistoryPoint is one stored value of a character's points with a
+// corporation, from the moment it was first seen.
+type LoyaltyHistoryPoint struct {
+	CorporationID int64
+	TakenAt       time.Time
+	Points        int64
+}
+
+// LoyaltyHistoryCursor is the keyset position of the last row of a page.
+type LoyaltyHistoryCursor struct {
+	TakenAt       time.Time
+	CorporationID int64
+}
+
+// LoyaltyHistoryFilter narrows LoyaltyHistory. CorporationID 0 means every
+// corporation, zero From/To are open ends (inclusive otherwise), After skips
+// everything up to that position and Limit 0 means no limit.
+type LoyaltyHistoryFilter struct {
+	CharacterID   int64
+	CorporationID int64
+	From, To      time.Time
+	After         *LoyaltyHistoryCursor
+	Limit         int
+}
+
+// LoyaltyHistory lists the history of one character by time and then
+// corporation ascending. It does not check who owns the character.
+func (s *Store) LoyaltyHistory(ctx context.Context, f LoyaltyHistoryFilter) ([]LoyaltyHistoryPoint, error) {
+	q := `SELECT corporation_id, taken_at, points FROM loyalty_history WHERE character_id = ?`
+	args := []any{f.CharacterID}
+	if f.CorporationID != 0 {
+		q += ` AND corporation_id = ?`
+		args = append(args, f.CorporationID)
+	}
+	if !f.From.IsZero() {
+		q += ` AND taken_at >= ?`
+		args = append(args, f.From.Unix())
+	}
+	if !f.To.IsZero() {
+		q += ` AND taken_at <= ?`
+		args = append(args, f.To.Unix())
+	}
+	if f.After != nil {
+		q += ` AND (taken_at, corporation_id) > (?, ?)`
+		args = append(args, f.After.TakenAt.Unix(), f.After.CorporationID)
+	}
+	q += ` ORDER BY taken_at, corporation_id`
+	if f.Limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, f.Limit)
+	}
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: loyalty history of character %d: %w", f.CharacterID, err)
+	}
+	defer rows.Close()
+	var out []LoyaltyHistoryPoint
+	for rows.Next() {
+		var p LoyaltyHistoryPoint
+		var at int64
+		if err := rows.Scan(&p.CorporationID, &at, &p.Points); err != nil {
+			return nil, fmt.Errorf("store: scan loyalty history: %w", err)
+		}
+		p.TakenAt = time.Unix(at, 0).UTC()
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
