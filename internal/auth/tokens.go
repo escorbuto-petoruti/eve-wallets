@@ -150,7 +150,11 @@ func (s *StoreTokens) Token(ctx context.Context, characterID int64) (string, err
 		}
 		if ts.RefreshToken != "" && ts.RefreshToken != tok.RefreshToken {
 			cur, ok, err := s.store.GetToken(ctx, characterID)
-			if err == nil && ok && cur.RefreshToken != tok.RefreshToken {
+			if err != nil {
+				// Unknown whether a re-login replaced the row: do not overwrite it.
+				return "", fmt.Errorf("auth: token for character %d: re-check after refresh: %w", characterID, err)
+			}
+			if ok && cur.RefreshToken != tok.RefreshToken {
 				// Re-login during the refresh: saving the rotated token would
 				// overwrite the new credentials.
 				if attempt == 0 {

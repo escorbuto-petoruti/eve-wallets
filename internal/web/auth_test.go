@@ -716,6 +716,33 @@ func TestLogout(t *testing.T) {
 	})
 }
 
+// A logout whose session delete fails must not claim success: the server
+// session would survive. The cookie is still cleared.
+func TestLogoutReportsDeleteSessionFailure(t *testing.T) {
+	f := newFixture(t, nil, false)
+	raw, err := sql.Open("sqlite", f.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`CREATE TRIGGER no_session_deletes BEFORE DELETE ON sessions BEGIN SELECT RAISE(ABORT, 'disk full'); END`); err != nil {
+		t.Fatal(err)
+	}
+	rec := request(f.anon, http.MethodPost, "/auth/logout", func(r *http.Request) {
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: f.aliceCookie})
+		r.Header.Set("Origin", "http://localhost")
+	})
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "" {
+		t.Errorf("Location = %q, want no redirect", loc)
+	}
+	if c := cookieNamed(rec, sessionCookie); c == nil || c.MaxAge >= 0 || c.Value != "" {
+		t.Errorf("session cookie not expired: %+v", c)
+	}
+}
+
 func TestLogoutFetchMetadata(t *testing.T) {
 	post := func(f *fixture, mutate func(*http.Request)) *httptest.ResponseRecorder {
 		return request(f.anon, http.MethodPost, "/auth/logout", func(r *http.Request) {

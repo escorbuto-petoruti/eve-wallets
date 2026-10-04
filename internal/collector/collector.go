@@ -103,10 +103,14 @@ type ItemError struct {
 }
 
 func (e ItemError) Error() string {
-	if e.Owner == "" {
-		return e.Err.Error() // a run-level error has no owner to prefix
+	err := e.Err
+	if err == nil {
+		err = errors.New("unknown error")
 	}
-	return fmt.Sprintf("%s: %v", e.Owner, e.Err)
+	if e.Owner == "" {
+		return err.Error() // a run-level error has no owner to prefix
+	}
+	return fmt.Sprintf("%s: %v", e.Owner, err)
 }
 
 // Report is the outcome of one run.

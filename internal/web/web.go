@@ -382,8 +382,11 @@ func (s *server) status(w http.ResponseWriter, r *http.Request, u store.User) {
 	skipped := []SkippedItem{}
 	for _, it := range st.Skipped {
 		// Only the skips this user's own characters produced: another user's
-		// character can hit a 403 on a corporation this user also sees.
-		if canSee(it.OwnerKind, it.OwnerID) && it.UserID == u.UserID {
+		// character can hit a 403 on a corporation this user also sees. A
+		// corporation skip is shown on that ownership alone, because it is
+		// precisely the corporation that is not linked to the user yet.
+		mine := u.UserID != 0 && it.UserID == u.UserID
+		if mine && (it.OwnerKind == store.KindCorporation || canSee(it.OwnerKind, it.OwnerID)) {
 			skipped = append(skipped, it)
 		}
 	}

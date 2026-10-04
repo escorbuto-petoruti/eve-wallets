@@ -27,9 +27,12 @@ type fakeTokenStore struct {
 	tokens  map[int64]store.Token
 	listErr error
 	getErr  error
-	saveErr error
-	events  *[]string
-	saves   int
+	// getFailAt makes the nth GetToken call (1-based) fail; 0 disables it.
+	getFailAt int
+	getCalls  int
+	saveErr   error
+	events    *[]string
+	saves     int
 }
 
 func newFakeTokenStore(events *[]string, toks ...store.Token) *fakeTokenStore {
@@ -64,8 +67,12 @@ func (s *fakeTokenStore) Tokens(context.Context) ([]store.Token, error) {
 func (s *fakeTokenStore) GetToken(_ context.Context, id int64) (store.Token, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.getCalls++
 	if s.getErr != nil {
 		return store.Token{}, false, s.getErr
+	}
+	if s.getFailAt != 0 && s.getCalls == s.getFailAt {
+		return store.Token{}, false, errors.New("db down on re-check")
 	}
 	t, ok := s.tokens[id]
 	return t, ok, nil
@@ -607,5 +614,20 @@ func TestForgetDuringInFlightRefresh(t *testing.T) {
 	got, err := src.Token(ctx, 1)
 	if err != nil || got != "fresh-access" {
 		t.Errorf("Token after = %q, %v; want fresh-access", got, err)
+	}
+}
+
+// A failing re-check read after the refresh must be a failure: the stored row
+// may be fresh credentials from a re-login, and must not be overwritten.
+func TestStoreTokensRecheckReadErrorIsFailure(t *testing.T) {
+	st := newFakeTokenStore(nil, aliceToken())
+	st.getFailAt = 2 // the first read loads the token, the second is the re-check
+	rf := &fakeRefresher{set: sso.TokenSet{AccessToken: accessTok, RefreshToken: newRefresh, ExpiresIn: 20 * time.Minute}}
+	src, _ := newSource(t, st, rf)
+	if _, err := src.Token(context.Background(), 1); err == nil {
+		t.Fatal("want an error when the re-check read fails")
+	}
+	if st.saves != 0 {
+		t.Errorf("saves = %d, want 0 (nothing overwritten on a failed re-check)", st.saves)
 	}
 }

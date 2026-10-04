@@ -676,3 +676,11 @@ func TestSkipsAndErrorsCarryOwnerIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestItemErrorNilErrDoesNotPanic(t *testing.T) {
+	for _, e := range []ItemError{{}, {Owner: "Alice"}} {
+		if got := e.Error(); got == "" {
+			t.Errorf("Error() = %q, want non-empty", got)
+		}
+	}
+}
