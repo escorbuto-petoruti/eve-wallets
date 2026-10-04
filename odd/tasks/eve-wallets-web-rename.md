@@ -21,3 +21,5 @@ Renaming exists only through `eve-wallets label` (CLI). The HTTP API was read-on
 
 ## Progress / evidence
 - Route: delegated writer (T1+T2, one writer; 2+ non-trivial files). T1 RED observed (all rename tests 405 before the route existed), then GREEN. T2 covered by literal-string UI tests and `node --check` only; no browser run. Not committed.
+
+- Commits: backend + frontend on feat/web-rename-wallets (HEAD 61c8b55). Spot check: go test ./... green. Not run in a browser.
