@@ -437,7 +437,7 @@
 
   // buildMovements returns the controller of a section's movements view: a
   // table of the stored journal of one wallet with type and date filters and
-  // keyset pagination. Server text only goes through textContent.
+  // Previous/Next paging over the keyset cursor. Server text only goes through textContent.
   function buildMovements(section) {
     var box = el("section", undefined, "movements");
     box.hidden = true;
@@ -490,12 +490,28 @@
     table.appendChild(tbody);
     scroll.appendChild(table);
     box.appendChild(scroll);
-    var more = el("button", "Load more", "movements-more");
-    more.type = "button";
-    more.hidden = true;
-    box.appendChild(more);
+    var pager = el("div", undefined, "movements-pager");
+    pager.hidden = true;
+    var prev = el("button", "Previous", "movements-prev");
+    prev.type = "button";
+    var next = el("button", "Next", "movements-next");
+    next.type = "button";
+    var pageNo = el("span", "", "muted movements-page");
+    pageNo.setAttribute("aria-live", "polite");
+    pager.appendChild(prev);
+    pager.appendChild(pageNo);
+    pager.appendChild(next);
+    box.appendChild(pager);
 
-    var cur = { wallet: null, trigger: null, cursor: null, seq: 0, typesLoaded: false };
+    // cur.stack holds the cursor used for each visited page (page 1 has none),
+    // so its length is the current page number; cur.next is the cursor of the
+    // page after the one shown.
+    var cur = { wallet: null, trigger: null, stack: [], next: null, busy: false, seq: 0, typesLoaded: false };
+
+    function syncPager() {
+      prev.disabled = cur.busy || cur.stack.length <= 1;
+      next.disabled = cur.busy || !cur.next;
+    }
 
     function url(cursor) {
       var q = ["limit=" + JOURNAL_PAGE];
@@ -508,7 +524,8 @@
       return "/api/wallets/" + encodeURIComponent(String(cur.wallet.id)) + "/journal?" + q.join("&");
     }
 
-    function addRows(entries) {
+    function showRows(entries) {
+      tbody.replaceChildren();
       entries.forEach(function (e) {
         var row = document.createElement("tr");
         row.appendChild(el("td", formatTime(e.date)));
@@ -533,30 +550,37 @@
       typeSel.value = types.indexOf(keep) >= 0 ? keep : "";
     }
 
-    // load fetches the first page (append false) or the next one.
-    function load(append) {
+    // load fetches the page reached through stack (its last item is the
+    // cursor, empty for page 1) and replaces the table with it. The stack is
+    // only committed once the page arrived, so a failed step keeps the view.
+    function load(stack, pressed) {
       if (!cur.wallet) { return; }
-      var seq = ++cur.seq;
       var f = dayBound(from.value, false);
       var t = dayBound(to.value, true);
       if (f && t && t < f) { status.textContent = "The end date is before the start date."; return; }
+      var seq = ++cur.seq;
       status.textContent = "Loading…";
-      more.disabled = true;
-      if (!append) { tbody.replaceChildren(); more.hidden = true; }
-      getJSON(url(append ? cur.cursor : "")).then(function (resp) {
+      cur.busy = true;
+      syncPager();
+      getJSON(url(stack[stack.length - 1])).then(function (resp) {
         if (seq !== cur.seq) { return; }
         if (!cur.typesLoaded) { fillTypes(resp.ref_types || []); cur.typesLoaded = true; }
-        addRows(resp.entries || []);
-        cur.cursor = resp.next_cursor || null;
-        more.hidden = !cur.cursor;
-        more.disabled = false;
+        showRows(resp.entries || []);
+        cur.stack = stack;
+        cur.next = resp.next_cursor || null;
+        cur.busy = false;
+        pager.hidden = false;
+        pageNo.textContent = "Page " + stack.length;
+        syncPager();
         var n = tbody.rows.length;
         status.textContent = n === 0 ? "No movements found." : n + (n === 1 ? " movement shown." : " movements shown.");
+        if (pressed) { (pressed.disabled ? title : pressed).focus(); }
       }).catch(function (err) {
         if (err.unauthorized || seq !== cur.seq) { return; }
-        more.disabled = false;
-        more.hidden = !append || !cur.cursor;
+        cur.busy = false;
+        syncPager();
         status.textContent = "Could not load movements: " + err.message;
+        if (pressed && !pressed.disabled) { pressed.focus(); }
       });
     }
 
@@ -570,18 +594,29 @@
       cur.wallet = w;
       cur.trigger = trigger;
       cur.typesLoaded = false;
-      cur.cursor = null;
+      cur.stack = [];
+      cur.next = null;
+      cur.busy = false;
+      pager.hidden = true;
+      tbody.replaceChildren();
       typeSel.replaceChildren();
       from.value = "";
       to.value = "";
       title.textContent = "Movements: " + walletLabel(w);
       box.hidden = false;
       closeBtn.focus();
-      load(false);
+      load([""]);
     }
     closeBtn.addEventListener("click", close);
-    more.addEventListener("click", function () { load(true); });
-    form.addEventListener("submit", function (ev) { ev.preventDefault(); load(false); });
+    next.addEventListener("click", function () {
+      if (cur.busy || !cur.next) { return; }
+      load(cur.stack.concat([cur.next]), next);
+    });
+    prev.addEventListener("click", function () {
+      if (cur.busy || cur.stack.length <= 1) { return; }
+      load(cur.stack.slice(0, -1), prev);
+    });
+    form.addEventListener("submit", function (ev) { ev.preventDefault(); load([""]); });
     box.addEventListener("keydown", function (ev) {
       if (ev.key === "Escape") { ev.preventDefault(); close(); }
     });

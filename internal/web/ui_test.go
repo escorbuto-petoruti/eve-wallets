@@ -378,7 +378,7 @@ func TestAppHasInlineRename(t *testing.T) {
 }
 
 // Every wallet panel (not the Total) opens a movements view backed by the
-// journal endpoint: filters, keyset pagination, an announced status, focus
+// journal endpoint: filters, Previous/Next keyset paging, an announced status, focus
 // management and a close button. Server text only goes through textContent.
 func TestAppHasMovementsView(t *testing.T) {
 	js := asset(t, "app.js")
@@ -387,7 +387,11 @@ func TestAppHasMovementsView(t *testing.T) {
 		"openMovements",
 		`"Movements"`,
 		`"Close"`,
-		`"Load more"`,
+		`"Previous"`,
+		`"Next"`,
+		`"Page "`,
+		"cur.stack",
+		"movements-pager",
 		`/journal?`,
 		"encodeURIComponent(String(w.id))",
 		"ref_type",
@@ -416,8 +420,11 @@ func TestAppHasMovementsView(t *testing.T) {
 	if strings.Contains(js, "innerHTML") || strings.Contains(js, ".style.") {
 		t.Error("app.js must not use innerHTML or inline styles")
 	}
+	if strings.Contains(js, "Load more") || strings.Contains(js, "movements-more") {
+		t.Error("app.js must page with Previous/Next, not Load more")
+	}
 	css := asset(t, "style.css")
-	for _, want := range []string{".movements", ".movements-filters", ".movements-status", ".amount"} {
+	for _, want := range []string{".movements-pager", ".movements", ".movements-filters", ".movements-status", ".amount"} {
 		if !strings.Contains(css, want) {
 			t.Errorf("style.css lacks %q", want)
 		}

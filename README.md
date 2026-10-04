@@ -105,7 +105,7 @@ The page shows a balance history chart with one line per selected wallet, an opt
 
 ## Movements
 
-The collector stores every wallet journal entry it downloads (date, signed amount in cents, type and description) in the `journal` table (schema v4, created in place without touching existing data). Each wallet panel has a **Movements** button that shows them newest first, with a type filter, a date range and **Load more**.
+The collector stores every wallet journal entry it downloads (date, signed amount in cents, type and description) in the `journal` table (schema v4, created in place without touching existing data). Each wallet panel has a **Movements** button that shows them newest first, with a type filter, a date range and **Previous** / **Next** paging.
 
 `GET /api/wallets/{id}/journal` (GET only, needs your session) returns `{"entries": [{"id", "date", "cents", "ref_type", "description"}], "next_cursor", "ref_types"}`. `date` is unix seconds and `cents` signed integer cents, like `/api/wallets`. Query parameters: `limit` (default 50, 1 to 200), `cursor` (the `next_cursor` of the previous page, a stable keyset on date and entry id, so new entries never shift a page), `ref_type`, and `from` / `to` (RFC 3339, inclusive). `next_cursor` is `null` on the last page and `ref_types` lists every type stored for the wallet. Invalid parameters answer 400; an unknown wallet or one you cannot see answers 404.
 

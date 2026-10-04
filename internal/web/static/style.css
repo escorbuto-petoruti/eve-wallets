@@ -152,7 +152,9 @@ a { color: var(--accent); }
 .movements-filters button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
 .movements-status { min-height: 1.4em; }
 .movements-open { margin: .25rem 0; padding: .15rem .6rem; font-size: .8rem; }
-.movements-more { margin-top: .5rem; }
+.movements-pager { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: .5rem; }
+.movements-pager button { padding: .15rem .6rem; }
+.movements-page { min-width: 5em; text-align: center; }
 .amount { white-space: nowrap; }
 .amount.gain { color: var(--good); }
 .amount.loss { color: var(--bad); }
