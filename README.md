@@ -28,7 +28,7 @@ The redirect URI is fixed at `http://localhost:8088/auth/callback`, so the serve
 ### Signing in
 
 - Any EVE character can sign in; there is no allowlist.
-- Login requests these scopes: `esi-wallet.read_character_wallet.v1`, `esi-wallet.read_corporation_wallets.v1` and `esi-corporations.read_divisions.v1`.
+- Login requests these scopes: `esi-wallet.read_character_wallet.v1`, `esi-wallet.read_corporation_wallets.v1`, `esi-corporations.read_divisions.v1` and `esi-characters.read_loyalty.v1` (loyalty points; see [Loyalty points](#loyalty-points)).
 - Signing in also registers the character for collection. Right after the login `serve` starts a collection cycle (it does not wait for the next interval); the page shows a "collecting" state until the first balances arrive.
 - A session lasts 7 days. It is an `HttpOnly`, `SameSite=Lax` cookie with no `Secure` flag (plain http on localhost); only a hash of the session id is stored. "Sign out" in the page header ends it at once (a POST with a same-origin check). When the session expires the page asks you to sign in again.
 - Each person sees only the wallets their characters can read. A corporation wallet is shared by the characters of that corporation that proved access with their own token.
@@ -103,6 +103,15 @@ Existing wallets are linked to a user on the first collection cycle of a charact
 
 The page shows a balance history chart with one line per selected wallet, an optional Total line, time ranges (24 h, 7 d, 30 d, All), a table of latest balances, and the result of the last collection. Each wallet panel (not the Total) has a Movements button that opens its journal (see [Movements](#movements)). `/api/status` also reports `journal_points`, the journal balances the last backfill saw (0 when it did not run); the page does not display it.
 
+## Loyalty points
+
+The page has a **Loyalty points** card with, per character, a table of corporation logo, name and points (right aligned, with thousands separators, most points first). The collector reads `GET /characters/{id}/loyalty/points` for every character whose token has the scope `esi-characters.read_loyalty.v1` and keeps only the latest snapshot per character and corporation in the `loyalty_points` table (schema v5, created in place); corporations ESI no longer returns are removed. Corporation names come from the public `POST /universe/names` (one batched call per cycle for the ids not cached yet) and are cached in `corporation_names`. When a lookup fails the page shows `Corp <id>`.
+
+- **Existing characters must sign in again.** Tokens saved before this version lack the scope, so the collector records the skip `missing scope esi-characters.read_loyalty.v1` and the page shows a "Sign in again" notice for that character instead of a table (use "Add character" or the notice link and pick the character on the EVE login screen). ISK wallets, journals and renames keep working without the new scope.
+- A 403 from ESI is the same skip; any other failure is an error of that character and the stored snapshot is kept.
+- `GET /api/loyalty` (GET only, needs your session) returns `{"characters": [{"character_id", "character_name", "fetched_at", "needs_reauth", "corporations": [{"corporation_id", "name", "points"}]}]}` for your own characters only, corporations by points descending. `fetched_at` is unix seconds, `null` when nothing is stored. `needs_reauth` is true when the token lacks the scope, and its `corporations` list is empty.
+- Not available: ESI has no endpoint for corporation loyalty points, and PLEX and event marks are not exposed by ESI as a wallet, so only character loyalty points are shown.
+
 ## Movements
 
 The collector stores every wallet journal entry it downloads (date, signed amount in cents, type and description) in the `journal` table (schema v4, created in place without touching existing data). Each wallet panel has a **Movements** button that opens them newest first in a full-screen dialog sized to the window (title, filters and status on top, the table scrolling in the middle, a fixed **Previous** / **Next** pager at the bottom; Escape or **Close** returns focus to the button), with a type filter and a date range. On narrow screens (480 px or less) the Type column is hidden.
@@ -158,7 +167,7 @@ Division names come from ESI during collection. The login already requests the s
 
 - `cmd/eve-wallets`: CLI (`serve`, `collect`, `backfill`, `wallets`, `label`) and wiring.
 - `internal/store`: SQLite (pure Go, `modernc.org/sqlite`) schema, migrations, users, tokens, sessions, wallet names and series queries.
-- `internal/esi`: ESI client (ETag cache, wallets, journals, division names).
+- `internal/esi`: ESI client (ETag cache, wallets, journals, division names, loyalty points, universe names).
 - `internal/sso`: EVE SSO client (PKCE, JWT validation) with the embedded client id and scopes.
 - `internal/auth`: token source backed by the refresh tokens in the store.
 - `internal/collector`: snapshot and backfill logic, graceful skips, wallet-to-user links.
@@ -187,4 +196,5 @@ Not verified:
 - The movements view and journal persistence are covered by fakes, a temporary SQLite database and literal-string UI checks only; they have not been run in a browser or against the real ESI.
 - The `serve` cycle that backfills the journal every time (and `--no-backfill`) is covered by fakes only; it has not been run against the real ESI.
 - The division names path was run against the real ESI only with a character that is not a Director. The case where a Director receives the names (stored with source `esi`, and cleared for divisions that return to the default name) is covered by fakes only.
+- Loyalty points: the collection, the API and the page are covered by fakes, a temporary SQLite database and literal-string UI checks only; no real ESI call was made, the migration of the real database to v5 was not run, and the card was not opened in a browser.
 - The systemd unit above.

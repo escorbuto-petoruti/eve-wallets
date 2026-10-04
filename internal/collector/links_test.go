@@ -28,8 +28,8 @@ func sortedLinks(s *fakeStore) [][2]int64 {
 // twoUsersOneCorp is two characters of different users in the same corporation.
 func twoUsersOneCorp() (*fakeAuth, *fakeESI) {
 	a := &fakeAuth{chars: []auth.Character{
-		{ID: 1, Name: "Alice", UserID: 10, Scopes: []string{charScope, corpScope}},
-		{ID: 2, Name: "Bob", UserID: 20, Scopes: []string{charScope, corpScope}},
+		{ID: 1, Name: "Alice", UserID: 10, Scopes: []string{charScope, corpScope, lpScope}},
+		{ID: 2, Name: "Bob", UserID: 20, Scopes: []string{charScope, corpScope, lpScope}},
 	}}
 	e := &fakeESI{
 		wallets:    map[int64]int64{1: 100, 2: 200},

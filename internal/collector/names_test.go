@@ -15,7 +15,7 @@ import (
 const divScope = "esi-corporations.read_divisions.v1"
 
 func director(id int64, name string) auth.Character {
-	return auth.Character{ID: id, Name: name, Scopes: []string{charScope, corpScope, divScope}}
+	return auth.Character{ID: id, Name: name, Scopes: []string{charScope, corpScope, divScope, lpScope}}
 }
 
 // namesByDivision returns the stored ESI names of corporation wallets keyed by
@@ -126,7 +126,7 @@ func TestNamesForbiddenForEveryone(t *testing.T) {
 }
 
 func TestNamesWithoutScopeDoNothingAndRecordNothing(t *testing.T) {
-	a := &fakeAuth{chars: []auth.Character{{ID: 1, Name: "Alice", Scopes: []string{charScope, corpScope}}}}
+	a := &fakeAuth{chars: []auth.Character{{ID: 1, Name: "Alice", Scopes: []string{charScope, corpScope, lpScope}}}}
 	e := &fakeESI{
 		corpOf:     map[int64]int64{1: 900},
 		corpWallet: map[string][]esi.DivisionBalance{"900/1": {{Division: 1, Cents: 1}}},
@@ -148,7 +148,7 @@ func TestNamesWithoutScopeDoNothingAndRecordNothing(t *testing.T) {
 
 func TestNamesLaterCharacterWithScopeStillFetches(t *testing.T) {
 	a := &fakeAuth{chars: []auth.Character{
-		{ID: 1, Name: "Alice", Scopes: []string{charScope, corpScope}},
+		{ID: 1, Name: "Alice", Scopes: []string{charScope, corpScope, lpScope}},
 		director(2, "Bob"),
 	}}
 	e := &fakeESI{

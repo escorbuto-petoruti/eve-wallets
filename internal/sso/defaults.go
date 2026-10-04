@@ -13,12 +13,13 @@ const (
 	scopeCharacterWallet   = "esi-wallet.read_character_wallet.v1"
 	scopeCorporationWallet = "esi-wallet.read_corporation_wallets.v1"
 	scopeCorporationNames  = "esi-corporations.read_divisions.v1"
+	scopeCharacterLoyalty  = "esi-characters.read_loyalty.v1"
 )
 
 // WalletScopes returns the scopes needed to read character and corporation
-// wallets. It returns a fresh slice so callers cannot mutate shared state.
+// wallets, plus the optional one for loyalty points. It returns a fresh slice so callers cannot mutate shared state.
 func WalletScopes() []string {
-	return []string{scopeCharacterWallet, scopeCorporationWallet, scopeCorporationNames}
+	return []string{scopeCharacterWallet, scopeCorporationWallet, scopeCorporationNames, scopeCharacterLoyalty}
 }
 
 // DefaultConfig returns the embedded client configuration. Every other field

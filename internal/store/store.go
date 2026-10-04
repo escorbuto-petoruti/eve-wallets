@@ -192,6 +192,21 @@ var migrations = []string{
 		UNIQUE (wallet_id, entry_id)
 	);
 	CREATE INDEX journal_wallet_date ON journal (wallet_id, date DESC, entry_id DESC);`,
+	// 5: the latest loyalty points snapshot per character and issuing
+	// corporation (fetched_at is unix seconds), removed with the character's
+	// token, and a cache of corporation names.
+	`CREATE TABLE loyalty_points (
+		character_id   INTEGER NOT NULL REFERENCES tokens(character_id) ON DELETE CASCADE,
+		corporation_id INTEGER NOT NULL,
+		points         INTEGER NOT NULL,
+		fetched_at     INTEGER NOT NULL,
+		PRIMARY KEY (character_id, corporation_id)
+	);
+	CREATE TABLE corporation_names (
+		corporation_id INTEGER PRIMARY KEY,
+		name           TEXT    NOT NULL,
+		fetched_at     INTEGER NOT NULL
+	);`,
 }
 
 // Store is a SQLite-backed wallet history.

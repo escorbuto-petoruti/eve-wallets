@@ -7,6 +7,7 @@
 package esi
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -30,6 +31,7 @@ const (
 	maxBodyBytes      = 8 << 20 // largest accepted successful response
 	maxErrorBodyBytes = 4 << 10 // largest error body that is read
 	maxJournalPages   = 50
+	maxNameBatch      = 1000 // ids ESI accepts in one /universe/names call
 	maxCacheEntries   = 512
 )
 
@@ -272,27 +274,60 @@ func (c *Client) get(ctx context.Context, token, path string, query url.Values) 
 	}
 	defer resp.Body.Close()
 
-	switch {
-	case resp.StatusCode == http.StatusNotModified && haveCached:
+	if resp.StatusCode == http.StatusNotModified && haveCached {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBodyBytes))
 		return cached.body, cached.header, nil
-	case resp.StatusCode == 420 || resp.StatusCode == http.StatusTooManyRequests:
-		return nil, nil, &RateLimitError{Status: resp.StatusCode, RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"))}
-	case resp.StatusCode < 200 || resp.StatusCode > 299:
-		return nil, nil, &APIError{Status: resp.StatusCode, Message: readErrorMessage(resp.Body, token)}
 	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
+	body, err := readBody(resp, token)
 	if err != nil {
-		return nil, nil, redactErr(err, token)
-	}
-	if len(body) > maxBodyBytes {
-		return nil, nil, fmt.Errorf("esi: response exceeds %d bytes", maxBodyBytes)
+		return nil, nil, err
 	}
 	if etag := resp.Header.Get("ETag"); etag != "" {
 		c.store(key, cacheEntry{etag: etag, body: body, header: resp.Header.Clone()})
 	}
 	return body, resp.Header, nil
+}
+
+// readBody maps a non-2xx status to its error and otherwise returns the
+// bounded response body.
+func readBody(resp *http.Response, token string) ([]byte, error) {
+	switch {
+	case resp.StatusCode == 420 || resp.StatusCode == http.StatusTooManyRequests:
+		return nil, &RateLimitError{Status: resp.StatusCode, RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"))}
+	case resp.StatusCode < 200 || resp.StatusCode > 299:
+		return nil, &APIError{Status: resp.StatusCode, Message: readErrorMessage(resp.Body, token)}
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
+	if err != nil {
+		return nil, redactErr(err, token)
+	}
+	if len(body) > maxBodyBytes {
+		return nil, fmt.Errorf("esi: response exceeds %d bytes", maxBodyBytes)
+	}
+	return body, nil
+}
+
+// postJSON performs an unauthenticated POST of a JSON body. Responses are not
+// cached.
+func (c *Client) postJSON(ctx context.Context, path string, payload any) ([]byte, error) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("esi: encode request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("esi: build request: %w", err)
+	}
+	req.Header.Set("X-Compatibility-Date", compatibilityDate)
+	req.Header.Set("User-Agent", c.ua)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return readBody(resp, "")
 }
 
 func (c *Client) lookup(key string) (cacheEntry, bool) {
@@ -382,4 +417,65 @@ func (c *Client) CorporationName(ctx context.Context, corporationID int64) (stri
 		return "", fmt.Errorf("esi: corporation %d response has no name", corporationID)
 	}
 	return info.Name, nil
+}
+
+// LoyaltyPoints is the loyalty points a character holds with one corporation.
+type LoyaltyPoints struct {
+	CorporationID int64
+	Points        int64
+}
+
+// CharacterLoyaltyPoints returns the character's loyalty points per issuing
+// corporation. It needs the scope esi-characters.read_loyalty.v1.
+func (c *Client) CharacterLoyaltyPoints(ctx context.Context, token string, characterID int64) ([]LoyaltyPoints, error) {
+	body, _, err := c.get(ctx, token, fmt.Sprintf("/characters/%d/loyalty/points", characterID), nil)
+	if err != nil {
+		return nil, err
+	}
+	var raw []struct {
+		CorporationID int64 `json:"corporation_id"`
+		Points        int64 `json:"loyalty_points"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("esi: decode loyalty points: %w", err)
+	}
+	out := make([]LoyaltyPoints, 0, len(raw))
+	for _, r := range raw {
+		out = append(out, LoyaltyPoints{CorporationID: r.CorporationID, Points: r.Points})
+	}
+	return out, nil
+}
+
+// UniverseNames resolves ids to names with the public POST /universe/names,
+// sending at most 1000 distinct ids per call. It sends no token. One invalid id
+// makes ESI reject its whole batch, which is returned as the error.
+func (c *Client) UniverseNames(ctx context.Context, ids []int64) (map[int64]string, error) {
+	out := make(map[int64]string, len(ids))
+	seen := make(map[int64]bool, len(ids))
+	var distinct []int64
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			distinct = append(distinct, id)
+		}
+	}
+	for len(distinct) > 0 {
+		batch := distinct[:min(maxNameBatch, len(distinct))]
+		distinct = distinct[len(batch):]
+		body, err := c.postJSON(ctx, "/universe/names", batch)
+		if err != nil {
+			return nil, err
+		}
+		var rows []struct {
+			ID   int64  `json:"id"`
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(body, &rows); err != nil {
+			return nil, fmt.Errorf("esi: decode universe names: %w", err)
+		}
+		for _, r := range rows {
+			out[r.ID] = r.Name
+		}
+	}
+	return out, nil
 }

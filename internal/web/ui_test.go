@@ -452,3 +452,73 @@ func TestAppHasMovementsView(t *testing.T) {
 		t.Error("index.html must not carry inline scripts or styles")
 	}
 }
+
+// The loyalty points view is a card of its own beside the owner tabs, so the
+// tabs keep working unchanged.
+func TestIndexHasLoyaltyCard(t *testing.T) {
+	idx := asset(t, "index.html")
+	for _, want := range []string{
+		`id="loyalty-card"`,
+		`id="loyalty-title"`,
+		"Loyalty points",
+		`id="loyalty-status"`,
+		`id="loyalty"`,
+	} {
+		if !strings.Contains(idx, want) {
+			t.Errorf("index.html lacks %q", want)
+		}
+	}
+	if tag := regexp.MustCompile(`<[a-z]+[^>]*id="loyalty-card"[^>]*>`).FindString(idx); !strings.Contains(tag, "hidden") {
+		t.Errorf("#loyalty-card must start hidden: %s", tag)
+	}
+	if tag := regexp.MustCompile(`<[a-z]+[^>]*id="loyalty-status"[^>]*>`).FindString(idx); !strings.Contains(tag, `aria-live="polite"`) || !strings.Contains(tag, `role="status"`) {
+		t.Errorf("#loyalty-status must be a polite live status: %s", tag)
+	}
+	// The owner tabs and sections are untouched.
+	for _, want := range []string{`id="tabs"`, `role="tablist"`, `id="sections"`} {
+		if !strings.Contains(idx, want) {
+			t.Errorf("index.html lost %q", want)
+		}
+	}
+}
+
+func TestAppRendersLoyaltyPoints(t *testing.T) {
+	js := asset(t, "app.js")
+	for _, want := range []string{
+		`/api/loyalty`,
+		`needs_reauth`,
+		`"/auth/add-character"`,
+		`reauth-notice`,
+		`eveImage("corporation"`,
+		`eveImage("character"`,
+		`Intl.NumberFormat`,
+		`$("loyalty-status")`,
+		`No loyalty points`,
+		`Cannot load loyalty points`,
+		`clearLoyalty`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("app.js lacks %q", want)
+		}
+	}
+	if strings.Contains(js, "innerHTML") {
+		t.Error("app.js must never use innerHTML")
+	}
+	if regexp.MustCompile(`\.style\.`).MatchString(js) {
+		t.Error("app.js must not set inline styles (CSP): use classes")
+	}
+	// Signing out clears the view so another user never sees stale data.
+	show := regexp.MustCompile(`(?s)function showSignedOut.*?\n  }\n`).FindString(js)
+	if !strings.Contains(show, "clearLoyalty()") {
+		t.Error("showSignedOut must clear the loyalty view")
+	}
+}
+
+func TestStyleHasLoyaltyClasses(t *testing.T) {
+	css := asset(t, "style.css")
+	for _, want := range []string{".loyalty-character", ".loyalty-corp", ".loyalty-table"} {
+		if !strings.Contains(css, want) {
+			t.Errorf("style.css lacks %q", want)
+		}
+	}
+}

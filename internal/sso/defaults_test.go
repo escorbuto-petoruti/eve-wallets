@@ -18,6 +18,7 @@ func TestDefaultConfig(t *testing.T) {
 		"esi-wallet.read_character_wallet.v1",
 		"esi-wallet.read_corporation_wallets.v1",
 		"esi-corporations.read_divisions.v1",
+		"esi-characters.read_loyalty.v1",
 	}
 	if !reflect.DeepEqual(cfg.Scopes, want) {
 		t.Errorf("Scopes = %v, want %v", cfg.Scopes, want)
