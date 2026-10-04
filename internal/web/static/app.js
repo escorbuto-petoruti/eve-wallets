@@ -160,7 +160,7 @@
   }
 
   function buildSection(group, idx) {
-    var section = { group: group, charts: [], token: 0, note: null, grid: null, tab: null, panel: null, drawn: false, rowNames: new Map() };
+    var section = { group: group, charts: [], token: 0, note: null, grid: null, tab: null, panel: null, drawn: false, rowNames: new Map(), movements: null, movementsBox: null };
     var card = el("section", undefined, "card");
     card.id = "panel-" + idx;
     card.setAttribute("role", "tabpanel");
@@ -189,6 +189,8 @@
     card.appendChild(section.note);
     section.grid = el("div", undefined, "panels");
     card.appendChild(section.grid);
+    section.movements = buildMovements(section);
+    card.appendChild(section.movementsBox);
 
     card.appendChild(el("h3", "Latest balances"));
     var scroll = el("div", undefined, "scroll");
@@ -421,6 +423,172 @@
     return box;
   }
 
+  var JOURNAL_PAGE = 50; // rows per request, within the server cap
+
+  function signedISK(cents) { return cents > 0 ? "+" + formatISK(cents) : formatISK(cents); }
+
+  // dayBound turns a date input value (YYYY-MM-DD, local time) into an RFC 3339
+  // instant at the start or the end of that day, or "" when it is empty.
+  function dayBound(value, end) {
+    if (!value) { return ""; }
+    var d = new Date(value + (end ? "T23:59:59" : "T00:00:00"));
+    return isNaN(d.getTime()) ? "" : d.toISOString();
+  }
+
+  // buildMovements returns the controller of a section's movements view: a
+  // table of the stored journal of one wallet with type and date filters and
+  // keyset pagination. Server text only goes through textContent.
+  function buildMovements(section) {
+    var box = el("section", undefined, "movements");
+    box.hidden = true;
+    var title = el("h3", "", "movements-title");
+    title.tabIndex = -1;
+    var closeBtn = el("button", "Close", "movements-close");
+    closeBtn.type = "button";
+    var head = el("div", undefined, "row");
+    head.appendChild(title);
+    head.appendChild(closeBtn);
+    box.appendChild(head);
+
+    var form = el("form", undefined, "movements-filters");
+    var id = "movements-" + section.panel.id;
+    function field(text, input, key) {
+      var wrap = el("div", undefined, "movements-field");
+      var label = el("label", text, "rename-label");
+      input.id = id + "-" + key;
+      label.setAttribute("for", input.id);
+      wrap.appendChild(label);
+      wrap.appendChild(input);
+      form.appendChild(wrap);
+    }
+    var typeSel = document.createElement("select");
+    var from = document.createElement("input");
+    from.type = "date";
+    var to = document.createElement("input");
+    to.type = "date";
+    field("Type", typeSel, "type");
+    field("From", from, "from");
+    field("To", to, "to");
+    var apply = el("button", "Apply", "primary");
+    apply.type = "submit";
+    form.appendChild(apply);
+    box.appendChild(form);
+
+    var status = el("p", "", "muted movements-status");
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
+    box.appendChild(status);
+
+    var scroll = el("div", undefined, "scroll");
+    var table = document.createElement("table");
+    var tr = document.createElement("tr");
+    [["Date"], ["Type"], ["Amount (ISK)", "num"], ["Description"]].forEach(function (c) { tr.appendChild(el("th", c[0], c[1])); });
+    var thead = document.createElement("thead");
+    thead.appendChild(tr);
+    table.appendChild(thead);
+    var tbody = document.createElement("tbody");
+    table.appendChild(tbody);
+    scroll.appendChild(table);
+    box.appendChild(scroll);
+    var more = el("button", "Load more", "movements-more");
+    more.type = "button";
+    more.hidden = true;
+    box.appendChild(more);
+
+    var cur = { wallet: null, trigger: null, cursor: null, seq: 0, typesLoaded: false };
+
+    function url(cursor) {
+      var q = ["limit=" + JOURNAL_PAGE];
+      if (typeSel.value) { q.push("ref_type=" + encodeURIComponent(typeSel.value)); }
+      var f = dayBound(from.value, false);
+      var t = dayBound(to.value, true);
+      if (f) { q.push("from=" + encodeURIComponent(f)); }
+      if (t) { q.push("to=" + encodeURIComponent(t)); }
+      if (cursor) { q.push("cursor=" + encodeURIComponent(cursor)); }
+      return "/api/wallets/" + encodeURIComponent(String(cur.wallet.id)) + "/journal?" + q.join("&");
+    }
+
+    function addRows(entries) {
+      entries.forEach(function (e) {
+        var row = document.createElement("tr");
+        row.appendChild(el("td", formatTime(e.date)));
+        row.appendChild(el("td", e.ref_type));
+        row.appendChild(el("td", signedISK(e.cents), e.cents < 0 ? "num amount loss" : "num amount gain"));
+        row.appendChild(el("td", e.description));
+        tbody.appendChild(row);
+      });
+    }
+
+    function fillTypes(types) {
+      var keep = typeSel.value;
+      typeSel.replaceChildren();
+      var all = el("option", "All types");
+      all.value = "";
+      typeSel.appendChild(all);
+      types.forEach(function (t) {
+        var o = el("option", t);
+        o.value = t;
+        typeSel.appendChild(o);
+      });
+      typeSel.value = types.indexOf(keep) >= 0 ? keep : "";
+    }
+
+    // load fetches the first page (append false) or the next one.
+    function load(append) {
+      if (!cur.wallet) { return; }
+      var seq = ++cur.seq;
+      var f = dayBound(from.value, false);
+      var t = dayBound(to.value, true);
+      if (f && t && t < f) { status.textContent = "The end date is before the start date."; return; }
+      status.textContent = "Loading…";
+      more.disabled = true;
+      if (!append) { tbody.replaceChildren(); more.hidden = true; }
+      getJSON(url(append ? cur.cursor : "")).then(function (resp) {
+        if (seq !== cur.seq) { return; }
+        if (!cur.typesLoaded) { fillTypes(resp.ref_types || []); cur.typesLoaded = true; }
+        addRows(resp.entries || []);
+        cur.cursor = resp.next_cursor || null;
+        more.hidden = !cur.cursor;
+        more.disabled = false;
+        var n = tbody.rows.length;
+        status.textContent = n === 0 ? "No movements found." : n + (n === 1 ? " movement shown." : " movements shown.");
+      }).catch(function (err) {
+        if (err.unauthorized || seq !== cur.seq) { return; }
+        more.disabled = false;
+        more.hidden = !append || !cur.cursor;
+        status.textContent = "Could not load movements: " + err.message;
+      });
+    }
+
+    function close() {
+      cur.seq++;
+      cur.wallet = null;
+      box.hidden = true;
+      if (cur.trigger) { cur.trigger.focus(); }
+    }
+    function openMovements(w, trigger) {
+      cur.wallet = w;
+      cur.trigger = trigger;
+      cur.typesLoaded = false;
+      cur.cursor = null;
+      typeSel.replaceChildren();
+      from.value = "";
+      to.value = "";
+      title.textContent = "Movements: " + walletLabel(w);
+      box.hidden = false;
+      closeBtn.focus();
+      load(false);
+    }
+    closeBtn.addEventListener("click", close);
+    more.addEventListener("click", function () { load(true); });
+    form.addEventListener("submit", function (ev) { ev.preventDefault(); load(false); });
+    box.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape") { ev.preventDefault(); close(); }
+    });
+    section.movementsBox = box;
+    return { open: openMovements, close: close };
+  }
+
   // buildPanel adds one small multiple: title, current balance, delta and a
   // canvas with its own Y scale.
   function buildPanel(section, opts) {
@@ -451,6 +619,10 @@
         titleText.nodeValue = walletLabel(w);
         describe();
       }), h.nextSibling);
+      var moves = el("button", "Movements", "movements-open");
+      moves.type = "button";
+      moves.addEventListener("click", function () { section.movements.open(w, moves); });
+      panel.insertBefore(moves, box);
     }
     section.grid.appendChild(panel);
     if (opts.points.length) { drawSpark(section, canvas, opts); }

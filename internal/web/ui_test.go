@@ -376,3 +376,54 @@ func TestAppHasInlineRename(t *testing.T) {
 		}
 	}
 }
+
+// Every wallet panel (not the Total) opens a movements view backed by the
+// journal endpoint: filters, keyset pagination, an announced status, focus
+// management and a close button. Server text only goes through textContent.
+func TestAppHasMovementsView(t *testing.T) {
+	js := asset(t, "app.js")
+	for _, want := range []string{
+		"buildMovements",
+		"openMovements",
+		`"Movements"`,
+		`"Close"`,
+		`"Load more"`,
+		`/journal?`,
+		"encodeURIComponent(String(w.id))",
+		"ref_type",
+		"next_cursor",
+		"ref_types",
+		`"cursor=" +`,
+		`type = "date"`,
+		`"Type"`, `"From"`, `"To"`, `"All types"`,
+		`"Date"`, `"Amount (ISK)"`, `"Description"`,
+		`"No movements found."`,
+		`"+" + formatISK`, // the sign is text, not only a color
+		"formatTime(",
+		"formatISK(",
+		"getJSON(",
+		`"aria-live", "polite"`,
+		`"role", "status"`,
+		`"for", `,
+		"closeBtn.focus()",
+		"trigger.focus()", // focus returns to the Movements button on close
+		`"Escape"`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("app.js lacks %q", want)
+		}
+	}
+	if strings.Contains(js, "innerHTML") || strings.Contains(js, ".style.") {
+		t.Error("app.js must not use innerHTML or inline styles")
+	}
+	css := asset(t, "style.css")
+	for _, want := range []string{".movements", ".movements-filters", ".movements-status", ".amount"} {
+		if !strings.Contains(css, want) {
+			t.Errorf("style.css lacks %q", want)
+		}
+	}
+	idx := asset(t, "index.html")
+	if strings.Contains(idx, "<script>") || strings.Contains(idx, "style=") {
+		t.Error("index.html must not carry inline scripts or styles")
+	}
+}
