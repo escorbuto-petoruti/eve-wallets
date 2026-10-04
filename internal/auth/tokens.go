@@ -152,6 +152,10 @@ func (s *StoreTokens) Token(ctx context.Context, characterID int64) (string, err
 			cur, ok, err := s.store.GetToken(ctx, characterID)
 			if err != nil {
 				// Unknown whether a re-login replaced the row: do not overwrite it.
+				// Accepted limit: if SSO already rotated the refresh token, the
+				// rotated token is lost here (keeping it could overwrite
+				// credentials from a concurrent re-login), so the character
+				// must sign in again.
 				return "", fmt.Errorf("auth: token for character %d: re-check after refresh: %w", characterID, err)
 			}
 			if ok && cur.RefreshToken != tok.RefreshToken {
