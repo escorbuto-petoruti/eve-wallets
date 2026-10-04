@@ -125,3 +125,23 @@ func (s *Store) CorporationNames(ctx context.Context, ids []int64) (map[int64]st
 	}
 	return out, rows.Err()
 }
+
+// ScopesForUser returns the granted scopes of every character whose token
+// belongs to the user, keyed by character id. Refresh tokens are never read.
+func (s *Store) ScopesForUser(ctx context.Context, userID int64) (map[int64][]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT character_id, scopes FROM tokens WHERE user_id = ?`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("store: scopes for user %d: %w", userID, err)
+	}
+	defer rows.Close()
+	out := make(map[int64][]string)
+	for rows.Next() {
+		var id int64
+		var scopes string
+		if err := rows.Scan(&id, &scopes); err != nil {
+			return nil, fmt.Errorf("store: scan scopes: %w", err)
+		}
+		out[id] = strings.Fields(scopes)
+	}
+	return out, rows.Err()
+}

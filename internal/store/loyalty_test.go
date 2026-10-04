@@ -192,3 +192,21 @@ func TestCorporationNamesCache(t *testing.T) {
 		t.Fatalf("empty upsert: %v", err)
 	}
 }
+
+func TestScopesForUser(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	seedLoyaltyUser(t, s, 10, "Alice")
+	seedLoyaltyUser(t, s, 20, "Bob")
+	if err := s.SaveToken(ctx, Token{CharacterID: 11, UserID: 10, CharacterName: "Alt", RefreshToken: "r", Scopes: []string{"x", "y"}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ScopesForUser(ctx, 10)
+	want := map[int64][]string{10: {"a"}, 11: {"x", "y"}}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("ScopesForUser(10) = %v, %v, want %v (own characters only)", got, err, want)
+	}
+	if got, err = s.ScopesForUser(ctx, 99); err != nil || len(got) != 0 {
+		t.Fatalf("unknown user = %v, %v", got, err)
+	}
+}
