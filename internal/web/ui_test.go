@@ -168,7 +168,7 @@ func TestAppBuildsSectionsPerKindAndOwner(t *testing.T) {
 		`w.kind === "character"`, // split by kind
 		`w.owner_id`,             // one section per corporation
 		`w.owner_name`,           // titled with the owner name
-		"new Chart(",             // own chart per section
+		"new Chart(",             // own chart per panel
 		"MAX_IDS",                // 50-wallet cap kept
 		"section.token",          // own request token per section
 		"aria-label",             // unique canvas / range labels
@@ -238,7 +238,7 @@ func TestTabsContract(t *testing.T) {
 		`"ArrowLeft"`, `"ArrowRight"`, `"Home"`, `"End"`,
 		"activateSection",
 		"s.token++", // switching invalidates the previous request
-		"s.chart.destroy()",
+		"destroyCharts(s)",
 		"state.active",
 	} {
 		if !strings.Contains(js, want) {
@@ -293,6 +293,36 @@ func TestAppBuildsEveImageURLsFromSafeIds(t *testing.T) {
 func TestStyleHasEveImageClass(t *testing.T) {
 	css := asset(t, "style.css")
 	for _, want := range []string{".eve-img", "vertical-align"} {
+		if !strings.Contains(css, want) {
+			t.Errorf("style.css lacks %q", want)
+		}
+	}
+}
+
+// Each wallet gets its own small-multiple panel with its own chart and Y
+// scale; there are no selection checkboxes any more.
+func TestAppBuildsSmallMultiplePanels(t *testing.T) {
+	js := asset(t, "app.js")
+	for _, want := range []string{
+		"buildPanel", "drawPanels", "drawSpark",
+		`stepped: "before"`,
+		"legend: { display: false }",
+		`"big num"`, `"delta "`, // current balance and delta
+		`"Up"`, `"Down"`, `"Flat"`, // text label, not color alone
+		"Showing the first ", // omitted wallets are announced
+		`q.set("total", "1")`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("app.js lacks %q", want)
+		}
+	}
+	for _, gone := range []string{"totalBox", "section.selected", `cb.type = "checkbox"`, "Select at least one wallet", "fieldset"} {
+		if strings.Contains(js, gone) {
+			t.Errorf("app.js still has the removed selection UI %q", gone)
+		}
+	}
+	css := asset(t, "style.css")
+	for _, want := range []string{".panels", "auto-fill", "minmax(280px", ".panel", ".spark", "height: 120px"} {
 		if !strings.Contains(css, want) {
 			t.Errorf("style.css lacks %q", want)
 		}
