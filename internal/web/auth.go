@@ -246,14 +246,15 @@ func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookie); err == nil && c.Value != "" {
 		deleteErr = s.deps.Store.DeleteSession(r.Context(), hashSession(c.Value))
 	}
-	clearCookie(w, sessionCookie, "/")
 	if deleteErr != nil {
-		// The cookie is cleared, but the server session survives: do not
-		// tell the user they signed out.
+		// Keep the cookie: the server session survives, and the retry must
+		// still carry it to re-attempt the delete. Do not tell the user they
+		// signed out.
 		log.Printf("web: sign-out: delete session: %v", deleteErr)
 		errorPage(w, http.StatusInternalServerError, "Sign-out failed. Please try again.")
 		return
 	}
+	clearCookie(w, sessionCookie, "/")
 	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
