@@ -44,6 +44,26 @@ less install.sh
 sh install.sh
 ```
 
+### Installer script (Windows)
+
+In PowerShell (5.1 or 7), no administrator rights needed:
+
+```powershell
+irm https://raw.githubusercontent.com/escorbuto-petoruti/eve-wallets/main/install.ps1 | iex
+```
+
+It downloads the latest release zip, verifies its SHA-256 against `checksums.txt` before installing anything, and puts `eve-wallets.exe` in `%LOCALAPPDATA%\eve-wallets\bin`. Options are environment variables: `$env:VERSION = 'vX.Y.Z'` installs a specific release and `$env:INSTALL_DIR = 'DIR'` another directory. An existing binary is kept as `eve-wallets.exe.bak-prev`. It does not change your `PATH`: if the directory is not on it, the installer prints the command to add it. Only Windows amd64 is supported. If `eve-wallets.exe` is running, stop it first (the installer cannot replace a running program and says so).
+
+If you prefer to read it before running it:
+
+```powershell
+irm https://raw.githubusercontent.com/escorbuto-petoruti/eve-wallets/main/install.ps1 -OutFile install.ps1
+notepad install.ps1
+.\install.ps1
+```
+
+To update, run the same installer again. If scripts are blocked on your machine, use `powershell -ExecutionPolicy Bypass -File .\install.ps1`.
+
 ### Manual download (all platforms)
 
 Download the archive for your platform and `checksums.txt` from the releases page, then verify and extract it:
@@ -53,7 +73,7 @@ sha256sum --ignore-missing -c checksums.txt   # macOS: shasum -a 256 -c checksum
 tar -xzf eve-wallets_<version>_linux_amd64.tar.gz
 ```
 
-On Windows, check the hash with `Get-FileHash <archive> -Algorithm SHA256`, compare it with the line in `checksums.txt`, and unzip. Put the binary somewhere on your `PATH`.
+The manual steps below are an alternative to the installers. On Windows, check the hash with `Get-FileHash <archive> -Algorithm SHA256`, compare it with the line in `checksums.txt`, and unzip. Put the binary somewhere on your `PATH`.
 
 ### From source
 
@@ -145,7 +165,7 @@ systemctl --user enable --now eve-wallets
 
 No `PATH` entry or environment file is needed. After an update, restart it with `systemctl --user restart eve-wallets`.
 
-On macOS you can run the same command from a launchd agent, and on Windows you can run `eve-wallets.exe serve` in a terminal. Neither was tested.
+On macOS you can run the same command from a launchd agent, and on Windows you can run `eve-wallets.exe serve` in a terminal (no service is provided). Neither was tested.
 
 ## Update
 
@@ -154,7 +174,7 @@ eve-wallets update           # download, verify and replace the binary
 eve-wallets update --check   # only report whether a newer release exists
 ```
 
-`update` (Linux and macOS) asks GitHub for the latest release, downloads the archive for your platform and `checksums.txt`, verifies the SHA-256, and replaces the running executable atomically, keeping the previous one as `eve-wallets.bak-prev` next to it. Then restart the service. A `dev` build (from source) refuses to update unless you pass `--force`. On Windows, `update` prints the manual steps: download the new zip, verify it and replace the binary. You can always update manually by downloading the archive as in [Install](#install).
+`update` (Linux and macOS) asks GitHub for the latest release, downloads the archive for your platform and `checksums.txt`, verifies the SHA-256, and replaces the running executable atomically, keeping the previous one as `eve-wallets.bak-prev` next to it. Then restart the service. A `dev` build (from source) refuses to update unless you pass `--force`. On Windows, `update` is not supported and prints manual steps; re-run `install.ps1` instead (or download the new zip, verify it and replace the binary). You can always update manually by downloading the archive as in [Install](#install).
 
 `update` never touches the database.
 
@@ -282,4 +302,5 @@ Not verified:
 - Loyalty points: the collection, the API and the page are covered by fakes, a temporary SQLite database and literal-string UI checks only; no real ESI call was made, the migration of the real database to v5 was not run, and the tab was not opened in a browser.
 - Loyalty history: the migration to v6, the append-on-change logic and the API are covered by temporary SQLite databases and in-process HTTP tests only; the real database was not migrated and no real ESI call was made.
 - The systemd unit above, and running on macOS or Windows at all (only linux/amd64 was built and run here; the other platforms were only cross-compiled).
+- `install.ps1` has never been executed: there was no PowerShell on the machine it was written on, so it was only reviewed by reading. It was not run on a real Windows machine nor in Windows PowerShell 5.1. Its fake-release test (`scripts/test-install-ps1.sh`, wired into CI, PowerShell 7 on Linux) has not been observed running yet.
 - The release workflow, `install.sh` and `eve-wallets update` against real GitHub releases: they were only tested against local fake releases.
