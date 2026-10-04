@@ -3,9 +3,9 @@
 (function () {
   "use strict";
 
-  var PALETTE = ["#2563eb", "#dc2626", "#16a34a", "#d97706", "#7c3aed",
-    "#0891b2", "#db2777", "#65a30d", "#ea580c", "#4b5563"];
-  var TOTAL_COLOR = "#e5e5e5";
+  var PALETTE = ["#61cce5", "#8ed7bc", "#f0b36b", "#b69cff", "#ff8a8a",
+    "#5aa9ff", "#f28dc4", "#c3e07a", "#ff9f6e", "#9aa7b4"];
+  var TOTAL_COLOR = "#e9f0f6";
   var MAX_IDS = 50; // keep in sync with the server cap
 
   var state = { wallets: [], range: 2592000, sections: [], active: null };
