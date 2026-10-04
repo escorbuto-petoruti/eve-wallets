@@ -778,3 +778,47 @@ func TestStatusReauthIsEmptyArrayByDefault(t *testing.T) {
 		t.Errorf("body = %s, want reauth:[]", rec.Body.String())
 	}
 }
+
+// A character added to a user (not the one used to sign in) that must sign in
+// again is reported to that user, and to nobody else.
+func TestStatusReauthCoversAddedCharacterOfTheUser(t *testing.T) {
+	rep := collector.Report{
+		TakenAt: base,
+		Errors: []collector.ItemError{
+			{OwnerKind: store.KindCharacter, OwnerID: 3, Owner: "Carol", Err: &auth.ReauthError{CharacterID: 3, Name: "Carol"}},
+		},
+	}
+	f := newFixture(t, func() StatusSnapshot { return StatusFromReport(rep) }, false)
+	f.addUser(t, 2, "Bob")
+	f.saveChar(t, 1, 1, "Alice") // the character user 1 signs in with
+	f.saveChar(t, 1, 3, "Carol") // added later to the same user
+	f.saveChar(t, 2, 2, "Bob")
+
+	type reauth struct {
+		CharacterID int64  `json:"character_id"`
+		Name        string `json:"name"`
+	}
+	view := func(rec *httptest.ResponseRecorder) []reauth {
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d", rec.Code)
+		}
+		var got struct {
+			Reauth []reauth `json:"reauth"`
+		}
+		decode(t, rec, &got)
+		return got.Reauth
+	}
+
+	if r := view(do(f.h, http.MethodGet, "/api/status")); len(r) != 1 || r[0].CharacterID != 3 || r[0].Name != "Carol" {
+		t.Errorf("user 1 reauth = %+v, want only the added character Carol", r)
+	}
+
+	bob := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	bob.Host = "localhost"
+	bob.AddCookie(&http.Cookie{Name: sessionCookie, Value: f.newSession(t, 2, time.Hour)})
+	rec := httptest.NewRecorder()
+	f.anon.ServeHTTP(rec, bob)
+	if r := view(rec); len(r) != 0 {
+		t.Errorf("user 2 reauth = %+v, want none", r)
+	}
+}
