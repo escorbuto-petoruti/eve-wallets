@@ -160,7 +160,7 @@
   }
 
   function buildSection(group, idx) {
-    var section = { group: group, charts: [], token: 0, note: null, grid: null, tab: null, panel: null, drawn: false, rowNames: new Map() };
+    var section = { group: group, charts: [], token: 0, note: null, grid: null, tab: null, panel: null, drawn: false, rowNames: new Map(), movements: null, movementsBox: null };
     var card = el("section", undefined, "card");
     card.id = "panel-" + idx;
     card.setAttribute("role", "tabpanel");
@@ -189,6 +189,8 @@
     card.appendChild(section.note);
     section.grid = el("div", undefined, "panels");
     card.appendChild(section.grid);
+    section.movements = buildMovements(section);
+    card.appendChild(section.movementsBox);
 
     card.appendChild(el("h3", "Latest balances"));
     var scroll = el("div", undefined, "scroll");
@@ -421,6 +423,232 @@
     return box;
   }
 
+  var JOURNAL_PAGE = 50; // rows per request, within the server cap
+
+  function signedISK(cents) { return cents > 0 ? "+" + formatISK(cents) : formatISK(cents); }
+
+  // dayBound turns a date input value (YYYY-MM-DD, local time) into an RFC 3339
+  // instant at the start or the end of that day, or "" when it is empty.
+  function dayBound(value, end) {
+    if (!value) { return ""; }
+    var d = new Date(value + (end ? "T23:59:59" : "T00:00:00"));
+    return isNaN(d.getTime()) ? "" : d.toISOString();
+  }
+
+  // buildMovements returns the controller of a section's movements view: a
+  // table of the stored journal of one wallet with type and date filters and
+  // Previous/Next paging over the keyset cursor, shown in a modal dialog that
+  // fits the viewport. Server text only goes through textContent.
+  function buildMovements(section) {
+    var box = document.createElement("dialog");
+    box.className = "movements movements-dialog";
+    var modal = typeof box.showModal === "function";
+    box.hidden = true;
+    var title = el("h3", "", "movements-title");
+    title.id = "movements-title-" + section.panel.id;
+    box.setAttribute("aria-labelledby", title.id);
+    title.tabIndex = -1;
+    var closeBtn = el("button", "Close", "movements-close");
+    closeBtn.type = "button";
+    var head = el("div", undefined, "row movements-head");
+    head.appendChild(title);
+    head.appendChild(closeBtn);
+    box.appendChild(head);
+
+    var form = el("form", undefined, "movements-filters");
+    var id = "movements-" + section.panel.id;
+    function field(text, input, key) {
+      var wrap = el("div", undefined, "movements-field");
+      var label = el("label", text, "rename-label");
+      input.id = id + "-" + key;
+      label.setAttribute("for", input.id);
+      wrap.appendChild(label);
+      wrap.appendChild(input);
+      form.appendChild(wrap);
+    }
+    var typeSel = document.createElement("select");
+    var from = document.createElement("input");
+    from.type = "date";
+    var to = document.createElement("input");
+    to.type = "date";
+    field("Type", typeSel, "type");
+    field("From", from, "from");
+    field("To", to, "to");
+    var apply = el("button", "Apply", "primary");
+    apply.type = "submit";
+    form.appendChild(apply);
+    box.appendChild(form);
+
+    var status = el("p", "", "muted movements-status");
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
+    box.appendChild(status);
+
+    // The table scrolls in the middle region of the dialog, between the fixed
+    // top area and the pager; it is focusable so keyboard users can scroll it.
+    var scroll = el("div", undefined, "scroll movements-scroll movements-body");
+    scroll.setAttribute("tabindex", "0");
+    scroll.setAttribute("aria-label", "Movements table");
+    var table = document.createElement("table");
+    table.className = "movements-table";
+    var tr = document.createElement("tr");
+    [["Date"], ["Type"], ["Amount (ISK)", "num"], ["Description"]].forEach(function (c) { tr.appendChild(el("th", c[0], c[1])); });
+    var thead = document.createElement("thead");
+    thead.appendChild(tr);
+    table.appendChild(thead);
+    var tbody = document.createElement("tbody");
+    table.appendChild(tbody);
+    scroll.appendChild(table);
+    box.appendChild(scroll);
+    var pager = el("div", undefined, "movements-pager");
+    var prev = el("button", "Previous", "movements-prev");
+    prev.type = "button";
+    var next = el("button", "Next", "movements-next");
+    next.type = "button";
+    var pageNo = el("span", "", "muted movements-page");
+    pageNo.setAttribute("aria-live", "polite");
+    pager.appendChild(prev);
+    pager.appendChild(pageNo);
+    pager.appendChild(next);
+    box.appendChild(pager);
+
+    // cur.stack holds the cursor used for each visited page (page 1 has none),
+    // so its length is the current page number; cur.next is the cursor of the
+    // page after the one shown.
+    var cur = { wallet: null, trigger: null, stack: [], next: null, busy: false, seq: 0, typesLoaded: false };
+
+    function syncPager() {
+      prev.disabled = cur.busy || cur.stack.length <= 1;
+      next.disabled = cur.busy || !cur.next;
+    }
+
+    function url(cursor) {
+      var q = ["limit=" + JOURNAL_PAGE];
+      if (typeSel.value) { q.push("ref_type=" + encodeURIComponent(typeSel.value)); }
+      var f = dayBound(from.value, false);
+      var t = dayBound(to.value, true);
+      if (f) { q.push("from=" + encodeURIComponent(f)); }
+      if (t) { q.push("to=" + encodeURIComponent(t)); }
+      if (cursor) { q.push("cursor=" + encodeURIComponent(cursor)); }
+      return "/api/wallets/" + encodeURIComponent(String(cur.wallet.id)) + "/journal?" + q.join("&");
+    }
+
+    function showRows(entries) {
+      tbody.replaceChildren();
+      entries.forEach(function (e) {
+        var row = document.createElement("tr");
+        row.appendChild(el("td", formatTime(e.date), "movements-date"));
+        var typeCell = el("td", e.ref_type, "movements-type");
+        typeCell.setAttribute("title", e.ref_type);
+        row.appendChild(typeCell);
+        row.appendChild(el("td", signedISK(e.cents), e.cents < 0 ? "num amount loss" : "num amount gain"));
+        // Truncated with an ellipsis in CSS; the title keeps the full text.
+        var descCell = el("td", e.description, "movements-desc");
+        descCell.setAttribute("title", e.description);
+        row.appendChild(descCell);
+        tbody.appendChild(row);
+      });
+      scroll.scrollTop = 0;
+    }
+
+    function fillTypes(types) {
+      var keep = typeSel.value;
+      typeSel.replaceChildren();
+      var all = el("option", "All types");
+      all.value = "";
+      typeSel.appendChild(all);
+      types.forEach(function (t) {
+        var o = el("option", t);
+        o.value = t;
+        typeSel.appendChild(o);
+      });
+      typeSel.value = types.indexOf(keep) >= 0 ? keep : "";
+    }
+
+    // load fetches the page reached through stack (its last item is the
+    // cursor, empty for page 1) and replaces the table with it. The stack is
+    // only committed once the page arrived, so a failed step keeps the view.
+    function load(stack, pressed) {
+      if (!cur.wallet) { return; }
+      var f = dayBound(from.value, false);
+      var t = dayBound(to.value, true);
+      if (f && t && t < f) { status.textContent = "The end date is before the start date."; return; }
+      var seq = ++cur.seq;
+      status.textContent = "Loading…";
+      cur.busy = true;
+      syncPager();
+      getJSON(url(stack[stack.length - 1])).then(function (resp) {
+        if (seq !== cur.seq) { return; }
+        if (!cur.typesLoaded) { fillTypes(resp.ref_types || []); cur.typesLoaded = true; }
+        showRows(resp.entries || []);
+        cur.stack = stack;
+        cur.next = resp.next_cursor || null;
+        cur.busy = false;
+        pageNo.textContent = "Page " + stack.length;
+        syncPager();
+        var n = tbody.rows.length;
+        status.textContent = n === 0 ? "No movements found." : n + (n === 1 ? " movement shown." : " movements shown.");
+        if (pressed) { (pressed.disabled ? title : pressed).focus(); }
+      }).catch(function (err) {
+        if (err.unauthorized || seq !== cur.seq) { return; }
+        cur.busy = false;
+        syncPager();
+        status.textContent = "Could not load movements: " + err.message;
+        if (pressed && !pressed.disabled) { pressed.focus(); }
+      });
+    }
+
+    // reset drops the loaded state; it runs on every way of closing.
+    function reset() {
+      cur.seq++;
+      cur.wallet = null;
+      cur.busy = false;
+      box.hidden = true;
+      if (cur.trigger) { cur.trigger.focus(); }
+    }
+    function close() {
+      if (modal && box.open) { box.close(); } else { reset(); }
+    }
+    function openMovements(w, trigger) {
+      cur.wallet = w;
+      cur.trigger = trigger;
+      cur.typesLoaded = false;
+      cur.stack = [];
+      cur.next = null;
+      cur.busy = false;
+      pageNo.textContent = "";
+      syncPager();
+      tbody.replaceChildren();
+      typeSel.replaceChildren();
+      from.value = "";
+      to.value = "";
+      title.textContent = "Movements: " + walletLabel(w);
+      box.hidden = false;
+      if (modal) { if (!box.open) { box.showModal(); } }
+      closeBtn.focus();
+      load([""]);
+    }
+    closeBtn.addEventListener("click", close);
+    next.addEventListener("click", function () {
+      if (cur.busy || !cur.next) { return; }
+      load(cur.stack.concat([cur.next]), next);
+    });
+    prev.addEventListener("click", function () {
+      if (cur.busy || cur.stack.length <= 1) { return; }
+      load(cur.stack.slice(0, -1), prev);
+    });
+    form.addEventListener("submit", function (ev) { ev.preventDefault(); load([""]); });
+    // Escape fires "cancel" and then "close" on a modal dialog; "close" also
+    // follows box.close(), so it is the single place that resets the state.
+    box.addEventListener("close", reset);
+    box.addEventListener("cancel", function () { cur.seq++; });
+    box.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && !modal) { ev.preventDefault(); close(); }
+    });
+    section.movementsBox = box;
+    return { open: openMovements, close: close };
+  }
+
   // buildPanel adds one small multiple: title, current balance, delta and a
   // canvas with its own Y scale.
   function buildPanel(section, opts) {
@@ -451,6 +679,10 @@
         titleText.nodeValue = walletLabel(w);
         describe();
       }), h.nextSibling);
+      var moves = el("button", "Movements", "movements-open");
+      moves.type = "button";
+      moves.addEventListener("click", function () { section.movements.open(w, moves); });
+      panel.insertBefore(moves, box);
     }
     section.grid.appendChild(panel);
     if (opts.points.length) { drawSpark(section, canvas, opts); }

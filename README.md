@@ -101,7 +101,15 @@ Existing wallets are linked to a user on the first collection cycle of a charact
 
 ## The page
 
-The page shows a balance history chart with one line per selected wallet, an optional Total line, time ranges (24 h, 7 d, 30 d, All), a table of latest balances, and the result of the last collection. `/api/status` also reports `journal_points`, the journal balances the last backfill saw (0 when it did not run); the page does not display it.
+The page shows a balance history chart with one line per selected wallet, an optional Total line, time ranges (24 h, 7 d, 30 d, All), a table of latest balances, and the result of the last collection. Each wallet panel (not the Total) has a Movements button that opens its journal (see [Movements](#movements)). `/api/status` also reports `journal_points`, the journal balances the last backfill saw (0 when it did not run); the page does not display it.
+
+## Movements
+
+The collector stores every wallet journal entry it downloads (date, signed amount in cents, type and description) in the `journal` table (schema v4, created in place without touching existing data). Each wallet panel has a **Movements** button that opens them newest first in a full-screen dialog sized to the window (title, filters and status on top, the table scrolling in the middle, a fixed **Previous** / **Next** pager at the bottom; Escape or **Close** returns focus to the button), with a type filter and a date range. On narrow screens (480 px or less) the Type column is hidden.
+
+`GET /api/wallets/{id}/journal` (GET only, needs your session) returns `{"entries": [{"id", "date", "cents", "ref_type", "description"}], "next_cursor", "ref_types"}`. `date` is unix seconds and `cents` signed integer cents, like `/api/wallets`. Query parameters: `limit` (default 50, 1 to 200), `cursor` (the `next_cursor` of the previous page, a stable keyset on date and entry id, so new entries never shift a page), `ref_type`, and `from` / `to` (RFC 3339, inclusive). `next_cursor` is `null` on the last page and `ref_types` lists every type stored for the wallet. Invalid parameters answer 400; an unknown wallet or one you cannot see answers 404.
+
+Backfill: the journal is only downloaded by the backfill (`serve` runs it every cycle, `backfill` once). Each pass fetches the full journal ESI still provides and inserts the entries not stored yet, so a wallet with no stored journal gets everything ESI still holds (about 30 days, up to 50 pages) on its first pass and later passes only add new entries. Running it twice inserts nothing new. A failed journal write is reported as an error and never changes the stored balances. With `--no-backfill` and no manual `backfill`, no movements are stored. ESI does not return entries older than its 30-day window, so earlier movements cannot be recovered.
 
 ## Wallet names
 
@@ -135,7 +143,7 @@ Division names come from ESI during collection. The login already requests the s
 
 - Snapshots exist only while `serve` (or a manual or cron `collect`) runs. While it is off there are gaps.
 - Every `serve` cycle (default 30 min, the first one right at start) also stores the journal balances of the last 30 days, so per-transaction detail is kept while `serve` runs. ESI only holds 30 days of journal: if more than 30 days pass without a backfill (`serve` or `backfill`), the detail of the older days is lost for good, and only snapshots remain for that gap.
-- Backfill covers only the last 30 days (the ESI journal window), and only journal entries that carry a balance.
+- Backfill covers only the last 30 days (the ESI journal window). Balance points are stored only for journal entries that carry a balance; the movements list keeps every entry.
 - ESI caching: wallet balance 2 min for characters and 5 min for corporations; journal 1 h. Rate limits: 150 tokens per 15 min for character wallets and 300 for corporation wallets (read from the ESI OpenAPI spec). On a rate limit the run is reported as partial and retried later; the journal backfill is skipped in a cycle whose snapshot was rate limited. If you hit rate limits, use `--no-backfill`.
 - Money is stored as integer ISK cents, never floats. ESI amounts have up to four decimals (for example `3123652530.8712`); they are parsed exactly from the response text and rounded to the nearest cent (half away from zero) when stored.
 
@@ -176,6 +184,7 @@ Not verified:
 - The add and move character flow was tried by the owner in a real browser against the real EVE SSO (header, adding a character, moving one from another user, signing in with an attached character); it is covered by fakes and structural tests, not by an automated browser test.
 - The page (sign-in screen, header, sign out, session expiry, collecting state) in a real browser; its JavaScript has only structural tests and a syntax check.
 - The migration of the real v2 database to v3 (it is covered by a test on a generated v2 file).
+- The movements view and journal persistence are covered by fakes, a temporary SQLite database and literal-string UI checks only; they have not been run in a browser or against the real ESI.
 - The `serve` cycle that backfills the journal every time (and `--no-backfill`) is covered by fakes only; it has not been run against the real ESI.
 - The division names path was run against the real ESI only with a character that is not a Director. The case where a Director receives the names (stored with source `esi`, and cleared for divisions that return to the default name) is covered by fakes only.
 - The systemd unit above.

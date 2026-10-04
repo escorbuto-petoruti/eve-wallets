@@ -45,6 +45,8 @@ type StoreWriter interface {
 	UpsertWallet(ctx context.Context, w store.Wallet) (int64, error)
 	AddSnapshot(ctx context.Context, walletID int64, takenAt time.Time, cents int64) error
 	AddJournalBalance(ctx context.Context, walletID, entryID int64, at time.Time, cents int64) error
+	// AddJournalEntries stores journal rows and returns how many were new.
+	AddJournalEntries(ctx context.Context, walletID int64, entries []store.JournalEntry) (int, error)
 	SetESIName(ctx context.Context, walletID int64, name string) error
 	ClearESIName(ctx context.Context, walletID int64) error
 	// LinkWallet lets a user see a wallet; linking twice is a no-op.
