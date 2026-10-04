@@ -86,6 +86,8 @@ func TestValidateRejections(t *testing.T) {
 func TestValidateJWKSCacheAndRefetch(t *testing.T) {
 	f := newFakeSSO(t)
 	c := f.client()
+	now := time.Now()
+	c.jwks.now = func() time.Time { return now }
 	ctx := context.Background()
 
 	for i := 0; i < 3; i++ {
@@ -97,7 +99,8 @@ func TestValidateJWKSCacheAndRefetch(t *testing.T) {
 		t.Errorf("jwks fetched %d times, want 1 (cached)", f.jwksCalls)
 	}
 
-	// Key rotation: a new kid triggers exactly one refetch.
+	// Key rotation: a new kid triggers exactly one refetch (after the throttle).
+	now = now.Add(c.jwks.minRefetch + time.Second)
 	newKey, _ := rsa.GenerateKey(rand.Reader, 2048)
 	f.mu.Lock()
 	f.jwksKeys["kid-2"] = &newKey.PublicKey
@@ -110,6 +113,7 @@ func TestValidateJWKSCacheAndRefetch(t *testing.T) {
 	}
 
 	// Unknown kid after refetch fails and refetches only once per validation.
+	now = now.Add(c.jwks.minRefetch + time.Second)
 	if _, err := c.Validate(ctx, f.sign(t, jwt.SigningMethodRS256, f.key, "ghost")); err == nil {
 		t.Fatal("expected error")
 	}

@@ -46,6 +46,6 @@ func NewClient(cfg Config) *Client {
 		cfg.AllowedIssuers = []string{"login.eveonline.com", "https://login.eveonline.com"}
 	}
 	c := &Client{cfg: cfg}
-	c.jwks = &jwksCache{url: cfg.LoginBaseURL + "/oauth/jwks", http: cfg.HTTPClient}
+	c.jwks = &jwksCache{url: cfg.LoginBaseURL + "/oauth/jwks", http: cfg.HTTPClient, minRefetch: defaultMinRefetch}
 	return c
 }
