@@ -207,6 +207,20 @@ var migrations = []string{
 		name           TEXT    NOT NULL,
 		fetched_at     INTEGER NOT NULL
 	);`,
+	// 6: the append-only history of loyalty points per character and issuing
+	// corporation (taken_at is unix seconds). It follows the token like the
+	// snapshot. The primary key doubles as the (character, corporation, time)
+	// index and makes a pair's rows unique per instant. It is seeded with the
+	// current snapshot so existing values are not lost.
+	`CREATE TABLE loyalty_history (
+		character_id   INTEGER NOT NULL REFERENCES tokens(character_id) ON DELETE CASCADE,
+		corporation_id INTEGER NOT NULL,
+		taken_at       INTEGER NOT NULL,
+		points         INTEGER NOT NULL,
+		PRIMARY KEY (character_id, corporation_id, taken_at)
+	);
+	INSERT OR IGNORE INTO loyalty_history (character_id, corporation_id, taken_at, points)
+		SELECT character_id, corporation_id, fetched_at, points FROM loyalty_points;`,
 }
 
 // Store is a SQLite-backed wallet history.

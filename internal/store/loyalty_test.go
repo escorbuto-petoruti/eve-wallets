@@ -210,3 +210,154 @@ func TestScopesForUser(t *testing.T) {
 		t.Fatalf("unknown user = %v, %v", got, err)
 	}
 }
+
+// historyRows lists the stored history of a character as "corp@taken_at=points".
+func historyRows(t *testing.T, s *Store, char int64) []string {
+	t.Helper()
+	rows, err := s.db.Query(`SELECT corporation_id, taken_at, points FROM loyalty_history
+		WHERE character_id = ? ORDER BY taken_at, corporation_id`, char)
+	if err != nil {
+		t.Fatalf("query history: %v", err)
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var corp, at, pts int64
+		if err := rows.Scan(&corp, &at, &pts); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, strconv.FormatInt(corp, 10)+"@"+strconv.FormatInt(at, 10)+"="+strconv.FormatInt(pts, 10))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func TestReplaceLoyaltyRecordsHistoryOnlyOnChange(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	seedLoyaltyUser(t, s, 10, "Alice")
+	replace := func(at int64, rows ...LoyaltyPoints) {
+		t.Helper()
+		if err := s.ReplaceLoyalty(ctx, 10, rows, ts(at)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	replace(100, LoyaltyPoints{1, 50}, LoyaltyPoints{2, 7})
+	replace(200, LoyaltyPoints{1, 50}, LoyaltyPoints{2, 7}) // unchanged: nothing new
+	if got, want := historyRows(t, s, 10), []string{"1@100=50", "2@100=7"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unchanged = %v, want %v", got, want)
+	}
+	replace(300, LoyaltyPoints{1, 80}, LoyaltyPoints{2, 7}) // one change: one row
+	if got, want := historyRows(t, s, 10), []string{"1@100=50", "2@100=7", "1@300=80"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("change = %v, want %v", got, want)
+	}
+}
+
+func TestReplaceLoyaltyRecordsASingleZeroForAVanishedCorporation(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	seedLoyaltyUser(t, s, 10, "Alice")
+	replace := func(at int64, rows ...LoyaltyPoints) {
+		t.Helper()
+		if err := s.ReplaceLoyalty(ctx, 10, rows, ts(at)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	replace(100, LoyaltyPoints{1, 50}, LoyaltyPoints{2, 7})
+	replace(200, LoyaltyPoints{2, 7})  // corporation 1 vanished: one zero
+	replace(300, LoyaltyPoints{2, 7})  // still gone: no repeated zero
+	replace(400)                       // corporation 2 vanished too
+	replace(500, LoyaltyPoints{1, 50}) // corporation 1 reappears
+	want := []string{"1@100=50", "2@100=7", "1@200=0", "2@400=0", "1@500=50"}
+	if got := historyRows(t, s, 10); !reflect.DeepEqual(got, want) {
+		t.Fatalf("history = %v, want %v", got, want)
+	}
+}
+
+func TestReplaceLoyaltyFailureLeavesHistoryUntouched(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	seedLoyaltyUser(t, s, 10, "Alice")
+	if err := s.ReplaceLoyalty(ctx, 10, []LoyaltyPoints{{1, 50}}, ts(100)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReplaceLoyalty(ctx, 10, []LoyaltyPoints{{1, 60}, {5, 1}, {5, 2}}, ts(200)); err == nil {
+		t.Fatal("expected an error for a duplicated corporation")
+	}
+	if got, want := historyRows(t, s, 10), []string{"1@100=50"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("history after failed replace = %v, want %v", got, want)
+	}
+}
+
+func TestMigrationLoyaltyHistorySeedsExistingSnapshot(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "prev.db")
+	prev := len(migrations) - 1
+	raw, err := sql.Open("sqlite", "file:"+path+"?_pragma=foreign_keys(1)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range migrations[:prev] {
+		if _, err := raw.Exec(m); err != nil {
+			t.Fatalf("apply previous schema: %v", err)
+		}
+	}
+	if _, err := raw.Exec(`
+		INSERT INTO users (character_id, name, created_at) VALUES (10, 'Alice', 1);
+		INSERT INTO tokens (character_id, user_id, character_name, refresh_token, scopes, updated_at) VALUES (10, 10, 'Alice', 'r', 'a', 1);
+		INSERT INTO loyalty_points (character_id, corporation_id, points, fetched_at) VALUES (10, 1, 50, 111), (10, 2, 0, 111);
+		PRAGMA user_version = ` + strconv.Itoa(prev) + `;`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	_ = raw.Close()
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open previous database: %v", err)
+	}
+	defer s.Close()
+	if got, want := historyRows(t, s, 10), []string{"1@111=50", "2@111=0"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("seeded history = %v, want %v", got, want)
+	}
+	// The first collection after the upgrade records only real changes.
+	if err := s.ReplaceLoyalty(ctx, 10, []LoyaltyPoints{{1, 50}, {2, 9}}, ts(222)); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := historyRows(t, s, 10), []string{"1@111=50", "2@111=0", "2@222=9"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("history after first collection = %v, want %v", got, want)
+	}
+	// Reopening does not seed again.
+	_ = s.Close()
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	if got := historyRows(t, s2, 10); len(got) != 3 {
+		t.Fatalf("reopen duplicated the seed: %v", got)
+	}
+}
+
+func TestLoyaltyHistoryFollowsTheTokenLifecycle(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	seedLoyaltyUser(t, s, 10, "Alice")
+	seedLoyaltyUser(t, s, 20, "Bob")
+	if err := s.ReplaceLoyalty(ctx, 10, []LoyaltyPoints{{1, 5}}, ts(10)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MoveToken(ctx, 10, 20); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := historyRows(t, s, 10), []string{"1@10=5"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("after move = %v, want %v", got, want)
+	}
+	if err := s.DeleteToken(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	if got := historyRows(t, s, 10); len(got) != 0 {
+		t.Fatalf("after delete = %v, want none", got)
+	}
+}

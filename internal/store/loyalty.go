@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -31,6 +33,10 @@ func (s *Store) ReplaceLoyalty(ctx context.Context, characterID int64, rows []Lo
 		return fmt.Errorf("store: begin loyalty replace for character %d: %w", characterID, err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	previous, err := previousLoyalty(ctx, tx, characterID)
+	if err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM loyalty_points WHERE character_id = ?`, characterID); err != nil {
 		return fmt.Errorf("store: clear loyalty of character %d: %w", characterID, err)
 	}
@@ -40,9 +46,64 @@ func (s *Store) ReplaceLoyalty(ctx context.Context, characterID int64, rows []Lo
 			characterID, r.CorporationID, r.Points, at.Unix()); err != nil {
 			return fmt.Errorf("store: save loyalty of character %d: %w", characterID, err)
 		}
+		if err := appendLoyaltyHistory(ctx, tx, characterID, r.CorporationID, r.Points, at); err != nil {
+			return err
+		}
+		delete(previous, r.CorporationID)
+	}
+	// Corporations that held points and are no longer returned dropped to zero.
+	for corp, pts := range previous {
+		if pts == 0 {
+			continue
+		}
+		if err := appendLoyaltyHistory(ctx, tx, characterID, corp, 0, at); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: commit loyalty of character %d: %w", characterID, err)
+	}
+	return nil
+}
+
+// previousLoyalty reads the stored snapshot of a character as points by
+// corporation, inside the replace transaction.
+func previousLoyalty(ctx context.Context, tx *sql.Tx, characterID int64) (map[int64]int64, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT corporation_id, points FROM loyalty_points WHERE character_id = ?`, characterID)
+	if err != nil {
+		return nil, fmt.Errorf("store: read loyalty of character %d: %w", characterID, err)
+	}
+	defer rows.Close()
+	out := map[int64]int64{}
+	for rows.Next() {
+		var corp, pts int64
+		if err := rows.Scan(&corp, &pts); err != nil {
+			return nil, fmt.Errorf("store: scan loyalty: %w", err)
+		}
+		out[corp] = pts
+	}
+	return out, rows.Err()
+}
+
+// appendLoyaltyHistory stores points for the pair at the given time, unless
+// they equal the last stored value. A second value at the same instant
+// replaces the first.
+func appendLoyaltyHistory(ctx context.Context, tx *sql.Tx, characterID, corporationID, points int64, at time.Time) error {
+	var last int64
+	err := tx.QueryRowContext(ctx, `
+		SELECT points FROM loyalty_history WHERE character_id = ? AND corporation_id = ?
+		ORDER BY taken_at DESC LIMIT 1`, characterID, corporationID).Scan(&last)
+	if err == nil && last == points {
+		return nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("store: read loyalty history of character %d: %w", characterID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO loyalty_history (character_id, corporation_id, taken_at, points) VALUES (?, ?, ?, ?)
+		ON CONFLICT (character_id, corporation_id, taken_at) DO UPDATE SET points = excluded.points`,
+		characterID, corporationID, at.Unix(), points); err != nil {
+		return fmt.Errorf("store: save loyalty history of character %d: %w", characterID, err)
 	}
 	return nil
 }
