@@ -8,7 +8,9 @@ import (
 	"github.com/escorbuto-petoruti/eve-wallets/internal/update"
 )
 
-const windowsUpdateMsg = `eve-wallets: self-update is not available on Windows. To update by hand:
+const windowsUpdateMsg = `eve-wallets: self-update is not available on Windows. To update, stop eve-wallets and run the installer again in PowerShell:
+  irm https://raw.githubusercontent.com/escorbuto-petoruti/eve-wallets/main/install.ps1 | iex
+Or update by hand:
   1. download eve-wallets_<version>_windows_amd64.zip and checksums.txt from the latest GitHub release
   2. check the hash: Get-FileHash <zip> -Algorithm SHA256 (compare with checksums.txt)
   3. stop eve-wallets, replace eve-wallets.exe with the one in the zip, start it again
