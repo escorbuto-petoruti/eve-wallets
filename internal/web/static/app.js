@@ -193,8 +193,14 @@
     card.appendChild(section.movementsBox);
 
     card.appendChild(el("h3", "Latest balances"));
-    var scroll = el("div", undefined, "scroll");
+    // The table scrolls inside a fixed-height region so the header (sticky)
+    // and the pager below it are always visible together; it is focusable so
+    // keyboard users can scroll it.
+    var scroll = el("div", undefined, "scroll movements-scroll");
+    scroll.setAttribute("tabindex", "0");
+    scroll.setAttribute("aria-label", "Movements table");
     var table = document.createElement("table");
+    table.className = "movements-table";
     var head = document.createElement("tr");
     [["Wallet"], ["Balance (ISK)", "num"], ["As of"]].forEach(function (c) { head.appendChild(el("th", c[0], c[1])); });
     var thead = document.createElement("thead");
@@ -529,11 +535,17 @@
       entries.forEach(function (e) {
         var row = document.createElement("tr");
         row.appendChild(el("td", formatTime(e.date)));
-        row.appendChild(el("td", e.ref_type));
+        var typeCell = el("td", e.ref_type, "movements-type");
+        typeCell.setAttribute("title", e.ref_type);
+        row.appendChild(typeCell);
         row.appendChild(el("td", signedISK(e.cents), e.cents < 0 ? "num amount loss" : "num amount gain"));
-        row.appendChild(el("td", e.description));
+        // Truncated with an ellipsis in CSS; the title keeps the full text.
+        var descCell = el("td", e.description, "movements-desc");
+        descCell.setAttribute("title", e.description);
+        row.appendChild(descCell);
         tbody.appendChild(row);
       });
+      scroll.scrollTop = 0;
     }
 
     function fillTypes(types) {

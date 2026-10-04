@@ -152,6 +152,15 @@ a { color: var(--accent); }
 .movements-filters button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
 .movements-status { min-height: 1.4em; }
 .movements-open { margin: .25rem 0; padding: .15rem .6rem; font-size: .8rem; }
+.movements-scroll { height: min(60vh, 32rem); overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
+.movements-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.movements-table { table-layout: fixed; min-width: 36rem; }
+.movements-table th { position: sticky; top: 0; z-index: 1; background: var(--card2); box-shadow: inset 0 -1px 0 var(--border); }
+.movements-table th:nth-child(1), .movements-table td:nth-child(1) { width: 11.5rem; }
+.movements-table th:nth-child(2), .movements-table td:nth-child(2) { width: 9rem; }
+.movements-table th:nth-child(3), .movements-table td:nth-child(3) { width: 9.5rem; text-align: right; }
+.movements-table td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.movements-type, .movements-desc { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .movements-pager { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: .5rem; }
 .movements-pager button { padding: .15rem .6rem; }
 .movements-page { min-width: 5em; text-align: center; }

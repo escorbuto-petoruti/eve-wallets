@@ -411,6 +411,12 @@ func TestAppHasMovementsView(t *testing.T) {
 		`"for", `,
 		"closeBtn.focus()",
 		"trigger.focus()", // focus returns to the Movements button on close
+		`"scroll movements-scroll"`,
+		`"tabindex", "0"`,
+		`"aria-label", "Movements table"`,
+		`setAttribute("title"`, // the full text stays reachable under the ellipsis
+		"scrollTop = 0",
+		"movements-desc",
 		`"Escape"`,
 	} {
 		if !strings.Contains(js, want) {
@@ -424,7 +430,7 @@ func TestAppHasMovementsView(t *testing.T) {
 		t.Error("app.js must page with Previous/Next, not Load more")
 	}
 	css := asset(t, "style.css")
-	for _, want := range []string{".movements-pager", ".movements", ".movements-filters", ".movements-status", ".amount"} {
+	for _, want := range []string{".movements-pager", ".movements", ".movements-filters", ".movements-status", ".amount", ".movements-scroll", ".movements-desc", "table-layout: fixed", "position: sticky", "text-overflow: ellipsis", "height: min(60vh, 32rem)"} {
 		if !strings.Contains(css, want) {
 			t.Errorf("style.css lacks %q", want)
 		}
