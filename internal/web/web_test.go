@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/escorbuto-petoruti/eve-wallets/internal/auth"
 	"github.com/escorbuto-petoruti/eve-wallets/internal/collector"
 	"github.com/escorbuto-petoruti/eve-wallets/internal/store"
 )
@@ -712,5 +714,67 @@ func TestStatusShowsSkipsAndErrorsOfAddedCharacters(t *testing.T) {
 	}
 	if len(got.Errors) != 1 || got.Errors[0] != "Alice Alt: boom" {
 		t.Errorf("errors = %q, want only the added character error", got.Errors)
+	}
+}
+
+// A character whose collector error is auth.ErrReauthRequired is listed in
+// `reauth` for its owner only; the plain `errors` strings stay unchanged.
+func TestStatusExposesReauthToOwnerOnly(t *testing.T) {
+	rep := collector.Report{
+		TakenAt: base,
+		Errors: []collector.ItemError{
+			{OwnerKind: store.KindCharacter, OwnerID: 1, Owner: "Alice", Err: &auth.ReauthError{CharacterID: 1, Name: "Alice"}},
+			{OwnerKind: store.KindCharacter, OwnerID: 2, Owner: "Bob", Err: &auth.ReauthError{CharacterID: 2, Name: "Bob"}},
+			// A run-level error that wraps Bob's reauth must not leak him to Alice.
+			{Err: fmt.Errorf("refresh: %w", &auth.ReauthError{CharacterID: 2, Name: "Bob"})},
+			{OwnerKind: store.KindCharacter, OwnerID: 1, Owner: "Alice", Err: errBoom{}},
+		},
+	}
+	f := newFixture(t, func() StatusSnapshot { return StatusFromReport(rep) }, false)
+	f.addUser(t, 2, "Bob")
+	f.saveChar(t, 1, 1, "Alice")
+	f.saveChar(t, 2, 2, "Bob")
+
+	type reauth struct {
+		CharacterID int64  `json:"character_id"`
+		Name        string `json:"name"`
+	}
+	view := func(rec *httptest.ResponseRecorder) (r []reauth, errs []string) {
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d", rec.Code)
+		}
+		var got struct {
+			Reauth []reauth `json:"reauth"`
+			Errors []string `json:"errors"`
+		}
+		decode(t, rec, &got)
+		return got.Reauth, got.Errors
+	}
+
+	r, errs := view(do(f.h, http.MethodGet, "/api/status"))
+	if len(r) != 1 || r[0].CharacterID != 1 || r[0].Name != "Alice" {
+		t.Errorf("alice reauth = %+v, want only Alice", r)
+	}
+	if len(errs) != 3 || errs[0] != "Alice: auth: character 1 (Alice) must sign in again" || errs[1] != "refresh: auth: character 2 (Bob) must sign in again" || errs[2] != "Alice: boom" {
+		t.Errorf("alice errors = %q, want the unchanged strings", errs)
+	}
+
+	bob := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	bob.Host = "localhost"
+	bob.AddCookie(&http.Cookie{Name: sessionCookie, Value: f.newSession(t, 2, time.Hour)})
+	rec := httptest.NewRecorder()
+	f.anon.ServeHTTP(rec, bob)
+	r, _ = view(rec)
+	if len(r) != 1 || r[0].CharacterID != 2 || r[0].Name != "Bob" {
+		t.Errorf("bob reauth = %+v, want only Bob (once)", r)
+	}
+}
+
+// With nothing to re-authenticate, reauth is an empty array, not null.
+func TestStatusReauthIsEmptyArrayByDefault(t *testing.T) {
+	f := newFixture(t, func() StatusSnapshot { return StatusFromReport(collector.Report{TakenAt: base}) }, false)
+	rec := do(f.h, http.MethodGet, "/api/status")
+	if !strings.Contains(rec.Body.String(), `"reauth":[]`) {
+		t.Errorf("body = %s, want reauth:[]", rec.Body.String())
 	}
 }

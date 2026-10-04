@@ -212,8 +212,23 @@
       items.forEach(function (t) { ul.appendChild(el("li", t)); });
       box.appendChild(ul);
     }
+    var reauth = s.reauth || [];
+    reauth.forEach(function (r) {
+      var note = el("div", undefined, "warn reauth-notice");
+      note.setAttribute("role", "alert");
+      note.appendChild(el("p", r.name + ": sign in again", "warn"));
+      var link = el("a", "Sign in again", "button");
+      link.href = "/auth/add-character";
+      note.appendChild(link);
+      note.appendChild(el("p", "On the EVE login screen, choose " + r.name + ".", "muted"));
+      box.appendChild(note);
+    });
+    // The reauth characters already have their own notice above.
+    var errors = s.errors.filter(function (t) {
+      return !reauth.some(function (r) { return t.indexOf("character " + r.character_id + " (") !== -1; });
+    });
     list("Skipped:", s.skipped.map(function (k) { return k.owner + ": " + k.reason; }), "warn");
-    list("Errors:", s.errors, "bad");
+    list("Errors:", errors, "bad");
   }
 
   function themeColors() {

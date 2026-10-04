@@ -2,7 +2,9 @@ package web
 
 import (
 	"encoding/json"
+	"errors"
 
+	"github.com/escorbuto-petoruti/eve-wallets/internal/auth"
 	"github.com/escorbuto-petoruti/eve-wallets/internal/collector"
 	"github.com/escorbuto-petoruti/eve-wallets/internal/store"
 )
@@ -40,6 +42,16 @@ type ErrorItem struct {
 	OwnerKind store.Kind `json:"-"`
 	OwnerID   int64      `json:"-"`
 	Message   string     `json:"-"`
+	// Reauth is set when the error means the character must sign in again
+	// (errors.Is(err, auth.ErrReauthRequired)). Not serialized.
+	Reauth *ReauthItem `json:"-"`
+}
+
+// ReauthItem names a character that has to sign in again. It never carries a
+// token or SSO text.
+type ReauthItem struct {
+	CharacterID int64  `json:"character_id"`
+	Name        string `json:"name"`
 }
 
 func (e ErrorItem) MarshalJSON() ([]byte, error) { return json.Marshal(e.Message) }
@@ -59,7 +71,12 @@ func StatusFromReport(r collector.Report) StatusSnapshot {
 		s.Skipped = append(s.Skipped, SkippedItem{OwnerKind: k.OwnerKind, OwnerID: k.OwnerID, Owner: k.Owner, Reason: k.Reason, UserID: k.UserID})
 	}
 	for _, e := range r.Errors {
-		s.Errors = append(s.Errors, ErrorItem{OwnerKind: e.OwnerKind, OwnerID: e.OwnerID, Message: e.Error()})
+		it := ErrorItem{OwnerKind: e.OwnerKind, OwnerID: e.OwnerID, Message: e.Error()}
+		var re *auth.ReauthError
+		if errors.Is(e.Err, auth.ErrReauthRequired) && errors.As(e.Err, &re) {
+			it.Reauth = &ReauthItem{CharacterID: re.CharacterID, Name: re.Name}
+		}
+		s.Errors = append(s.Errors, it)
 	}
 	return s
 }
