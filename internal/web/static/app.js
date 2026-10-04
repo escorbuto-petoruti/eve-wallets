@@ -193,14 +193,8 @@
     card.appendChild(section.movementsBox);
 
     card.appendChild(el("h3", "Latest balances"));
-    // The table scrolls inside a fixed-height region so the header (sticky)
-    // and the pager below it are always visible together; it is focusable so
-    // keyboard users can scroll it.
-    var scroll = el("div", undefined, "scroll movements-scroll");
-    scroll.setAttribute("tabindex", "0");
-    scroll.setAttribute("aria-label", "Movements table");
+    var scroll = el("div", undefined, "scroll");
     var table = document.createElement("table");
-    table.className = "movements-table";
     var head = document.createElement("tr");
     [["Wallet"], ["Balance (ISK)", "num"], ["As of"]].forEach(function (c) { head.appendChild(el("th", c[0], c[1])); });
     var thead = document.createElement("thead");
@@ -443,15 +437,20 @@
 
   // buildMovements returns the controller of a section's movements view: a
   // table of the stored journal of one wallet with type and date filters and
-  // Previous/Next paging over the keyset cursor. Server text only goes through textContent.
+  // Previous/Next paging over the keyset cursor, shown in a modal dialog that
+  // fits the viewport. Server text only goes through textContent.
   function buildMovements(section) {
-    var box = el("section", undefined, "movements");
+    var box = document.createElement("dialog");
+    box.className = "movements movements-dialog";
+    var modal = typeof box.showModal === "function";
     box.hidden = true;
     var title = el("h3", "", "movements-title");
+    title.id = "movements-title-" + section.panel.id;
+    box.setAttribute("aria-labelledby", title.id);
     title.tabIndex = -1;
     var closeBtn = el("button", "Close", "movements-close");
     closeBtn.type = "button";
-    var head = el("div", undefined, "row");
+    var head = el("div", undefined, "row movements-head");
     head.appendChild(title);
     head.appendChild(closeBtn);
     box.appendChild(head);
@@ -485,8 +484,13 @@
     status.setAttribute("aria-live", "polite");
     box.appendChild(status);
 
-    var scroll = el("div", undefined, "scroll");
+    // The table scrolls in the middle region of the dialog, between the fixed
+    // top area and the pager; it is focusable so keyboard users can scroll it.
+    var scroll = el("div", undefined, "scroll movements-scroll movements-body");
+    scroll.setAttribute("tabindex", "0");
+    scroll.setAttribute("aria-label", "Movements table");
     var table = document.createElement("table");
+    table.className = "movements-table";
     var tr = document.createElement("tr");
     [["Date"], ["Type"], ["Amount (ISK)", "num"], ["Description"]].forEach(function (c) { tr.appendChild(el("th", c[0], c[1])); });
     var thead = document.createElement("thead");
@@ -497,7 +501,6 @@
     scroll.appendChild(table);
     box.appendChild(scroll);
     var pager = el("div", undefined, "movements-pager");
-    pager.hidden = true;
     var prev = el("button", "Previous", "movements-prev");
     prev.type = "button";
     var next = el("button", "Next", "movements-next");
@@ -534,7 +537,7 @@
       tbody.replaceChildren();
       entries.forEach(function (e) {
         var row = document.createElement("tr");
-        row.appendChild(el("td", formatTime(e.date)));
+        row.appendChild(el("td", formatTime(e.date), "movements-date"));
         var typeCell = el("td", e.ref_type, "movements-type");
         typeCell.setAttribute("title", e.ref_type);
         row.appendChild(typeCell);
@@ -581,7 +584,6 @@
         cur.stack = stack;
         cur.next = resp.next_cursor || null;
         cur.busy = false;
-        pager.hidden = false;
         pageNo.textContent = "Page " + stack.length;
         syncPager();
         var n = tbody.rows.length;
@@ -596,11 +598,16 @@
       });
     }
 
-    function close() {
+    // reset drops the loaded state; it runs on every way of closing.
+    function reset() {
       cur.seq++;
       cur.wallet = null;
+      cur.busy = false;
       box.hidden = true;
       if (cur.trigger) { cur.trigger.focus(); }
+    }
+    function close() {
+      if (modal && box.open) { box.close(); } else { reset(); }
     }
     function openMovements(w, trigger) {
       cur.wallet = w;
@@ -609,13 +616,15 @@
       cur.stack = [];
       cur.next = null;
       cur.busy = false;
-      pager.hidden = true;
+      pageNo.textContent = "";
+      syncPager();
       tbody.replaceChildren();
       typeSel.replaceChildren();
       from.value = "";
       to.value = "";
       title.textContent = "Movements: " + walletLabel(w);
       box.hidden = false;
+      if (modal) { if (!box.open) { box.showModal(); } }
       closeBtn.focus();
       load([""]);
     }
@@ -629,8 +638,12 @@
       load(cur.stack.slice(0, -1), prev);
     });
     form.addEventListener("submit", function (ev) { ev.preventDefault(); load([""]); });
+    // Escape fires "cancel" and then "close" on a modal dialog; "close" also
+    // follows box.close(), so it is the single place that resets the state.
+    box.addEventListener("close", reset);
+    box.addEventListener("cancel", function () { cur.seq++; });
     box.addEventListener("keydown", function (ev) {
-      if (ev.key === "Escape") { ev.preventDefault(); close(); }
+      if (ev.key === "Escape" && !modal) { ev.preventDefault(); close(); }
     });
     section.movementsBox = box;
     return { open: openMovements, close: close };
