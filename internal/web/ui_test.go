@@ -251,7 +251,7 @@ func TestTabsContract(t *testing.T) {
 		}
 	}
 	// Tab labels come from server names: textContent only.
-	if !strings.Contains(js, `el("button", group.title, "tab")`) {
+	if !strings.Contains(js, `el("button", label, "tab")`) || !strings.Contains(js, `makeTab("tab-" + idx, group.title`) {
 		t.Error("tab labels must be set through textContent")
 	}
 	if !strings.Contains(asset(t, "style.css"), `button.tab`) {
@@ -453,32 +453,75 @@ func TestAppHasMovementsView(t *testing.T) {
 	}
 }
 
-// The loyalty points view is a card of its own beside the owner tabs, so the
-// tabs keep working unchanged.
-func TestIndexHasLoyaltyCard(t *testing.T) {
+// The loyalty points view is the last tab of the owner tab bar, so the bar is
+// one tablist and there is no standalone card.
+func TestIndexHasLoyaltyPanelInsteadOfCard(t *testing.T) {
 	idx := asset(t, "index.html")
 	for _, want := range []string{
-		`id="loyalty-card"`,
+		`id="loyalty-panel"`,
 		`id="loyalty-title"`,
 		"Loyalty points",
 		`id="loyalty-status"`,
 		`id="loyalty"`,
+		`aria-labelledby="tab-loyalty"`,
 	} {
 		if !strings.Contains(idx, want) {
 			t.Errorf("index.html lacks %q", want)
 		}
 	}
-	if tag := regexp.MustCompile(`<[a-z]+[^>]*id="loyalty-card"[^>]*>`).FindString(idx); !strings.Contains(tag, "hidden") {
-		t.Errorf("#loyalty-card must start hidden: %s", tag)
+	if strings.Contains(idx, `id="loyalty-card"`) {
+		t.Error("index.html must not keep the standalone #loyalty-card section")
+	}
+	if tag := regexp.MustCompile(`<[a-z]+[^>]*id="loyalty-panel"[^>]*>`).FindString(idx); !strings.Contains(tag, `role="tabpanel"`) || !strings.Contains(tag, "hidden") {
+		t.Errorf("#loyalty-panel must be a hidden tabpanel: %s", tag)
 	}
 	if tag := regexp.MustCompile(`<[a-z]+[^>]*id="loyalty-status"[^>]*>`).FindString(idx); !strings.Contains(tag, `aria-live="polite"`) || !strings.Contains(tag, `role="status"`) {
 		t.Errorf("#loyalty-status must be a polite live status: %s", tag)
 	}
-	// The owner tabs and sections are untouched.
-	for _, want := range []string{`id="tabs"`, `role="tablist"`, `id="sections"`} {
+	// The panel lives outside #sections, which is emptied on every render.
+	if i, j := strings.Index(idx, `id="loyalty-panel"`), strings.Index(idx, `id="sections"`); i < j {
+		t.Error("#loyalty-panel must come after #sections")
+	}
+	for _, want := range []string{`id="tabs"`, `role="tablist"`, `id="sections"`, `id="status-card"`} {
 		if !strings.Contains(idx, want) {
 			t.Errorf("index.html lost %q", want)
 		}
+	}
+}
+
+// The loyalty tab is built with the shared tab pattern, loads lazily and hides
+// the time-range card.
+func TestAppHasLoyaltyTab(t *testing.T) {
+	js := asset(t, "app.js")
+	for _, want := range []string{
+		`makeTab("tab-loyalty", "Loyalty points", "loyalty-panel"`,
+		"activateLoyalty",
+		"state.lpActive",
+		"state.lpLoadedAt",
+		"LP_STALE_MS",
+		`$("controls").hidden = state.lpActive || !state.hasData`,
+		`insertBefore(tab, state.lpTab)`,
+		"state.lpTab",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("app.js lacks %q", want)
+		}
+	}
+	if n := strings.Count(js, `"role", "tab"`); n != 1 {
+		t.Errorf("tabs must come from one shared helper, found %d role=tab sites", n)
+	}
+	if strings.Contains(js, `loyalty-card`) {
+		t.Error("app.js still references #loyalty-card")
+	}
+	// Lazy: init must not load the loyalty points itself.
+	init := regexp.MustCompile(`(?s)function init\(\).*?\n  }\n`).FindString(js)
+	if strings.Contains(init, "loadLoyalty()") {
+		t.Error("init must not load loyalty points eagerly")
+	}
+	// The bar is keyboard-navigable as one tablist including the loyalty tab.
+	keys := regexp.MustCompile(`(?s)function onTabKey.*?\n  }\n`).FindString(js)
+	if !strings.Contains(keys, "allTabs()") {
+		t.Error("onTabKey must navigate over owner tabs and the loyalty tab")
 	}
 }
 
