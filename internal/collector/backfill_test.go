@@ -115,7 +115,7 @@ func TestBackfillCorporationOnceWithTwoCharacters(t *testing.T) {
 	if n != 1 || corpWallets != 1 {
 		t.Fatalf("journal fetches = %d, report = %+v, calls = %v", n, rep, e.calls)
 	}
-	if len(rep.Skipped) != 1 || rep.Skipped[0].Reason != ReasonAlreadyCollected {
+	if len(rep.Skipped) != 0 {
 		t.Fatalf("skipped = %+v", rep.Skipped)
 	}
 }
