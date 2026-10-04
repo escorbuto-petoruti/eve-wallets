@@ -32,5 +32,7 @@ Delegated direct: one writer (writer trigger: 5 changes over 5+ non-trivial file
 
 Verification: go build, go vet, gofmt -l, go test ./... and go test -race on touched packages (see final report).
 
+Native review (2026-10-04): assessed HIGH (authentication, `internal/auth/tokens.go`), 337 changed lines over `main..c71e8da`, consent granted, 4 lenses, approved with no correction and acknowledged (lineage review-ab3c16f1957719e7). 17+ informational findings, none blocking; mostly in the new `internal/sso/jwks.go` throttle (R1-001/R3-001/R4-JWKS-ROTATION-WINDOW at `jwks.go:62-65`, R3-002/R4-JWKS-FAILURE-AMPLIFICATION at `jwks.go:74`), the sign-out retry (R3-003/R4-SIGNOUT-RETRY-SUCCESS, `web/auth.go:249-256`) and the token re-check (R3-004/R4-TOKEN-RECHECK-DROPS-ROTATION, `auth/tokens.go:153-157`). The writer also touched `internal/sso/config.go` and `internal/sso/validate_test.go`, outside the listed edit surfaces (clock injection).
+
 ## Next step
 Human review, push and PR.
