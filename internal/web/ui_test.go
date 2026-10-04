@@ -251,3 +251,12 @@ func TestTabsContract(t *testing.T) {
 		t.Error("style.css lacks the tab styles")
 	}
 }
+
+// Wallets are listed inside their owner's tab, so the owner name must not be
+// prefixed to every wallet label.
+func TestWalletLabelDoesNotRepeatTheOwner(t *testing.T) {
+	js := asset(t, "app.js")
+	if strings.Contains(js, "w.owner_name + \" \\u00b7 \"") {
+		t.Error("app.js still prefixes the owner name to the wallet label")
+	}
+}

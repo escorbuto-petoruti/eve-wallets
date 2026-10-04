@@ -76,10 +76,10 @@
   function formatISK(cents) { return iskFmt.format(cents / 100); }
   function formatTime(unix) { return new Date(unix * 1000).toLocaleString(); }
 
-  // walletLabel is the character name or "<corporation> \u00b7 <name>".
+  // walletLabel is the wallet name. Wallets are always shown inside their
+  // owner's tab, so the owner name is not repeated.
   function walletLabel(w) {
-    var name = w.name || (w.kind === "character" ? w.owner_name : w.division === 1 ? "Master Wallet" : "Division " + w.division);
-    return w.kind === "character" ? name : w.owner_name + " \u00b7 " + name;
+    return w.name || (w.kind === "character" ? w.owner_name : w.division === 1 ? "Master Wallet" : "Division " + w.division);
   }
   function ownerLabel(w) {
     return w.owner_name + " (" + (w.kind === "character" ? "character" : "corporation") + ")";
