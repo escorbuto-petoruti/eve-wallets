@@ -221,3 +221,33 @@ func TestAppRendersReauthNotice(t *testing.T) {
 		t.Error("style.css lacks .reauth-notice")
 	}
 }
+
+// Owners are shown as tabs: one visible panel, one live chart.
+func TestTabsContract(t *testing.T) {
+	idx := asset(t, "index.html")
+	if !regexp.MustCompile(`<div id="tabs"[^>]*role="tablist"`).MatchString(idx) {
+		t.Error(`index.html lacks the role="tablist" container #tabs`)
+	}
+	js := asset(t, "app.js")
+	for _, want := range []string{
+		`"role", "tab"`, `"role", "tabpanel"`,
+		"aria-selected", "aria-controls", "aria-labelledby",
+		"tabIndex", // roving tabindex
+		`"ArrowLeft"`, `"ArrowRight"`, `"Home"`, `"End"`,
+		"activateSection",
+		"s.token++", // switching invalidates the previous request
+		"s.chart.destroy()",
+		"state.active",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("app.js lacks %q", want)
+		}
+	}
+	// Tab labels come from server names: textContent only.
+	if !strings.Contains(js, `el("button", group.title, "tab")`) {
+		t.Error("tab labels must be set through textContent")
+	}
+	if !strings.Contains(asset(t, "style.css"), `button.tab`) {
+		t.Error("style.css lacks the tab styles")
+	}
+}

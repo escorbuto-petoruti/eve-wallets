@@ -8,7 +8,7 @@
   var TOTAL_COLOR = "#e5e5e5";
   var MAX_IDS = 50; // keep in sync with the server cap
 
-  var state = { wallets: [], range: 2592000, sections: [] };
+  var state = { wallets: [], range: 2592000, sections: [], active: null };
 
   var $ = function (id) { return document.getElementById(id); };
 
@@ -107,17 +107,31 @@
       if (s.chart) { s.chart.destroy(); s.chart = null; }
     });
     state.sections = [];
+    state.active = null;
+    $("tabs").replaceChildren();
+    $("tabs").hidden = true;
     $("sections").replaceChildren();
   }
 
   function buildSection(group, idx) {
-    var section = { group: group, selected: new Set(), chart: null, token: 0, totalBox: null, note: null, canvas: null };
+    var section = { group: group, selected: new Set(), chart: null, token: 0, totalBox: null, note: null, canvas: null, tab: null, panel: null };
     var card = el("section", undefined, "card");
-    var titleId = "section-title-" + idx;
-    var title = el("h2", group.title);
-    title.id = titleId;
-    card.setAttribute("aria-labelledby", titleId);
-    card.appendChild(title);
+    card.id = "panel-" + idx;
+    card.setAttribute("role", "tabpanel");
+    card.setAttribute("aria-labelledby", "tab-" + idx);
+    card.hidden = true;
+    section.panel = card;
+    var tab = el("button", group.title, "tab");
+    tab.type = "button";
+    tab.id = "tab-" + idx;
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-controls", card.id);
+    tab.setAttribute("aria-selected", "false");
+    tab.tabIndex = -1;
+    tab.addEventListener("click", function () { activateSection(section); });
+    section.tab = tab;
+    $("tabs").appendChild(tab);
+    card.appendChild(el("h2", group.title));
 
     var fs = el("fieldset");
     fs.appendChild(el("legend", "Wallets in " + group.title, "sr-only"));
@@ -183,13 +197,50 @@
     return section;
   }
 
+  // activateSection shows one panel. Only the active tab keeps a chart: the
+  // others are destroyed and their pending requests are invalidated.
+  function activateSection(section) {
+    if (state.active === section && section.chart) { return; }
+    state.sections.forEach(function (s) {
+      var on = s === section;
+      if (!on) {
+        s.token++;
+        if (s.chart) { s.chart.destroy(); s.chart = null; }
+      }
+      s.panel.hidden = !on;
+      s.tab.setAttribute("aria-selected", on ? "true" : "false");
+      s.tab.tabIndex = on ? 0 : -1;
+    });
+    state.active = section;
+    refreshChart(section);
+  }
+
+  function onTabKey(ev) {
+    var n = state.sections.length;
+    var i = state.sections.findIndex(function (s) { return s.tab === ev.target; });
+    if (i < 0 || n === 0) { return; }
+    var next;
+    if (ev.key === "ArrowRight") { next = (i + 1) % n; }
+    else if (ev.key === "ArrowLeft") { next = (i + n - 1) % n; }
+    else if (ev.key === "Home") { next = 0; }
+    else if (ev.key === "End") { next = n - 1; }
+    else { return; }
+    ev.preventDefault();
+    activateSection(state.sections[next]);
+    state.sections[next].tab.focus();
+  }
+
+  // The selected tab survives a reload while its owner still exists.
   function renderSections() {
+    var prev = state.active ? state.active.group.key : null;
     clearSections();
     groupWallets(state.wallets).forEach(function (g, i) {
-      var s = buildSection(g, i);
-      state.sections.push(s);
-      refreshChart(s);
+      state.sections.push(buildSection(g, i));
     });
+    if (!state.sections.length) { return; }
+    var pick = state.sections.find(function (s) { return s.group.key === prev; }) || state.sections[0];
+    $("tabs").hidden = state.sections.length < 2;
+    activateSection(pick);
   }
 
   function renderStatus(s) {
@@ -331,10 +382,11 @@
       b.classList.toggle("active", on);
       b.setAttribute("aria-pressed", on ? "true" : "false");
     });
-    state.sections.forEach(refreshChart);
+    if (state.active) { refreshChart(state.active); }
   }
 
   function init() {
+    $("tabs").addEventListener("keydown", onTabKey);
     document.querySelectorAll("#ranges button").forEach(function (b) {
       b.addEventListener("click", function () { setRange(b); });
     });

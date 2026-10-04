@@ -88,3 +88,9 @@ ul { margin: .25rem 0; padding-left: 1.25rem; }
 }
 .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 h3 { margin: .75rem 0 .25rem; font-size: 1rem; }
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 16px 0 0; border-bottom: 1px solid var(--border); }
+
+button.tab { border-bottom: 0; border-radius: 6px 6px 0 0; margin-bottom: -1px; }
+button.tab[aria-selected="true"] { background: var(--card); border-color: var(--border); border-bottom: 1px solid var(--card); font-weight: 600; color: var(--accent); }
+button.tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+#tabs:not([hidden]) + #sections .card { margin-top: 0; border-top-left-radius: 0; border-top-right-radius: 0; }
