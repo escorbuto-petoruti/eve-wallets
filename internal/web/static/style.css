@@ -81,7 +81,9 @@ h3 { margin: .75rem 0 .25rem; font-size: 1rem; }
 button.tab { border-bottom: 0; border-radius: 6px 6px 0 0; margin-bottom: -1px; }
 button.tab[aria-selected="true"] { background: var(--card); border-color: var(--border); border-bottom: 1px solid var(--card); font-weight: 600; color: var(--accent); }
 button.tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-#tabs:not([hidden]) + #sections .card, #tabs:not([hidden]) ~ #loyalty-panel { margin-top: 0; border-top-left-radius: 0; border-top-right-radius: 0; }
+#tabs:not([hidden]) ~ #sections .card, #tabs:not([hidden]) ~ #loyalty-panel, #tabs:not([hidden]) ~ #controls { margin-top: 0; border-top-left-radius: 0; border-top-right-radius: 0; }
+/* The range card is the top of the content area: it joins the panel below it. */
+#tabs:not([hidden]) ~ #controls:not([hidden]) { margin-bottom: 0; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 .eve-img { vertical-align: middle; border-radius: 4px; margin-right: .35rem; flex: none; }
 
 /* Look and feel: dark panels, cyan accent, mono numerals. */

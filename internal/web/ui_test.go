@@ -565,3 +565,18 @@ func TestStyleHasLoyaltyClasses(t *testing.T) {
 		}
 	}
 }
+
+// The tab bar sits above the time-range card so it does not move when the card
+// is hidden on the loyalty tab; the card is styled as part of the panel area.
+func TestTabBarComesBeforeRangeCard(t *testing.T) {
+	idx := asset(t, "index.html")
+	tabs := strings.Index(idx, `id="tabs"`)
+	controls := strings.Index(idx, `id="controls"`)
+	sections := strings.Index(idx, `id="sections"`)
+	if tabs < 0 || controls < 0 || sections < 0 || !(tabs < controls && controls < sections) {
+		t.Errorf("want #tabs < #controls < #sections, got %d, %d, %d", tabs, controls, sections)
+	}
+	if !strings.Contains(asset(t, "style.css"), "#tabs:not([hidden]) ~ #controls") {
+		t.Error("style.css must attach #controls to the tab bar")
+	}
+}
