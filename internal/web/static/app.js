@@ -47,11 +47,11 @@
   // epoch changes on every sign-out so late responses of an old view are dropped.
   var session = { signedIn: false, epoch: 0, pollTimer: null };
 
-  // getJSON rejects with err.unauthorized for a 401; the page has already
+  // requestJSON rejects with err.unauthorized for a 401; the page has already
   // switched to the signed-out view by then, callers just stay quiet.
-  function getJSON(url) {
+  function requestJSON(url, init) {
     var epoch = session.epoch;
-    return fetch(url, { headers: { "Accept": "application/json" } }).then(function (r) {
+    return fetch(url, init).then(function (r) {
       return r.json().catch(function () { return null; }).then(function (body) {
         if (r.status === 401) {
           var wasSignedIn = session.signedIn;
@@ -64,6 +64,20 @@
         if (!r.ok) { throw new Error(body && body.error ? body.error : "request failed (" + r.status + ")"); }
         return body;
       });
+    });
+  }
+
+  function getJSON(url) {
+    return requestJSON(url, { headers: { "Accept": "application/json" } });
+  }
+
+  // postJSON sends a same-origin JSON POST (the server refuses anything else).
+  function postJSON(url, payload) {
+    return requestJSON(url, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Accept": "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
     });
   }
 
@@ -92,6 +106,8 @@
     $("signed-in").hidden = false;
   }
 
+  var MAX_NAME = 64; // keep in sync with the server limit
+
   var iskFmt = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   function formatISK(cents) { return iskFmt.format(cents / 100); }
   function formatTime(unix) { return new Date(unix * 1000).toLocaleString(); }
@@ -100,6 +116,11 @@
   // owner's tab, so the owner name is not repeated.
   function walletLabel(w) {
     return w.name || (w.kind === "character" ? w.owner_name : w.division === 1 ? "Master Wallet" : "Division " + w.division);
+  }
+  // canRename mirrors the server rule: corporation wallets other than the
+  // Master Wallet whose name does not come from ESI. The server enforces it.
+  function canRename(w) {
+    return w.kind === "corporation" && w.division !== 1 && w.name_source !== "esi";
   }
   function ownerLabel(w) {
     return w.owner_name + " (" + (w.kind === "character" ? "character" : "corporation") + ")";
@@ -139,7 +160,7 @@
   }
 
   function buildSection(group, idx) {
-    var section = { group: group, charts: [], token: 0, note: null, grid: null, tab: null, panel: null, drawn: false };
+    var section = { group: group, charts: [], token: 0, note: null, grid: null, tab: null, panel: null, drawn: false, rowNames: new Map() };
     var card = el("section", undefined, "card");
     card.id = "panel-" + idx;
     card.setAttribute("role", "tabpanel");
@@ -184,7 +205,9 @@
       var nameCell = el("td");
       var rowPic = w.kind === "character" ? eveImage("character", w.owner_id, 32) : null;
       if (rowPic) { nameCell.appendChild(rowPic); }
-      nameCell.appendChild(document.createTextNode(" " + walletLabel(w)));
+      var rowName = document.createTextNode(" " + walletLabel(w));
+      section.rowNames.set(w.id, rowName);
+      nameCell.appendChild(rowName);
       tr.appendChild(nameCell);
       tr.appendChild(el("td", formatISK(w.cents), "num"));
       tr.appendChild(el("td", formatTime(w.balance_time)));
@@ -310,13 +333,103 @@
     return { text: label + " " + sign + formatISK(diff) + " ISK (" + pct + ") over the range", cls: cls };
   }
 
+  // buildRenameControl returns the inline rename form of a wallet panel: a
+  // Rename button that opens a text field with Save, Cancel and (for a custom
+  // name) Reset name. Server text only goes through textContent or .value.
+  // onChange runs after a successful save so the panel can show the new name.
+  function buildRenameControl(section, w, focusTarget, onChange) {
+    var box = el("div", undefined, "rename");
+    var openBtn = el("button", "Rename", "rename-open");
+    openBtn.type = "button";
+    var form = el("form", undefined, "rename-form");
+    form.hidden = true;
+    var inputId = "rename-input-" + w.id;
+    var label = el("label", "Wallet name", "rename-label");
+    label.setAttribute("for", inputId);
+    var input = document.createElement("input");
+    input.type = "text";
+    input.id = inputId;
+    input.maxLength = MAX_NAME;
+    input.autocomplete = "off";
+    var save = el("button", "Save", "primary");
+    save.type = "submit";
+    var cancel = el("button", "Cancel");
+    cancel.type = "button";
+    var reset = el("button", "Reset name");
+    reset.type = "button";
+    var status = el("p", "", "muted rename-status");
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
+    var actions = el("div", undefined, "rename-actions");
+    [save, cancel, reset].forEach(function (b) { actions.appendChild(b); });
+    [label, input, actions].forEach(function (n) { form.appendChild(n); });
+    box.appendChild(openBtn);
+    box.appendChild(form);
+    box.appendChild(status);
+
+    function sync() {
+      openBtn.hidden = !canRename(w) || !form.hidden;
+      reset.hidden = w.name_source !== "custom";
+    }
+    function setBusy(on) {
+      [input, save, cancel, reset].forEach(function (n) { n.disabled = on; });
+    }
+    function close() {
+      form.hidden = true;
+      sync();
+      if (!openBtn.hidden) { openBtn.focus(); } else if (focusTarget) { focusTarget.focus(); }
+    }
+    function open() {
+      status.textContent = "";
+      input.value = w.name_source === "custom" ? w.name : "";
+      input.placeholder = w.name_source === "custom" ? "" : w.name;
+      form.hidden = false;
+      sync();
+      input.focus();
+      input.select();
+    }
+    function send(name) {
+      status.textContent = "Saving…";
+      setBusy(true);
+      postJSON("/api/wallets/" + encodeURIComponent(String(w.id)) + "/label", { name: name }).then(function (resp) {
+        w.name = resp.name;
+        w.name_source = resp.name_source;
+        var rowName = section.rowNames.get(w.id);
+        if (rowName) { rowName.nodeValue = " " + walletLabel(w); }
+        setBusy(false);
+        status.textContent = name === "" ? "Name reset." : "Name saved.";
+        onChange();
+        close();
+      }).catch(function (err) {
+        if (err.unauthorized) { return; }
+        setBusy(false);
+        status.textContent = err.message;
+        input.focus();
+      });
+    }
+    openBtn.addEventListener("click", open);
+    cancel.addEventListener("click", function () { status.textContent = ""; close(); });
+    reset.addEventListener("click", function () { send(""); });
+    form.addEventListener("submit", function (ev) {
+      ev.preventDefault();
+      send(input.value);
+    });
+    input.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape") { ev.preventDefault(); status.textContent = ""; close(); }
+    });
+    sync();
+    return box;
+  }
+
   // buildPanel adds one small multiple: title, current balance, delta and a
   // canvas with its own Y scale.
   function buildPanel(section, opts) {
     var panel = el("article", undefined, "panel " + opts.cls);
     var h = el("h3", undefined, "panel-title");
+    h.tabIndex = -1; // focus target when the rename control has no button to return to
     if (opts.image) { h.appendChild(opts.image); }
-    h.appendChild(document.createTextNode(opts.label));
+    var titleText = document.createTextNode(opts.label);
+    h.appendChild(titleText);
     panel.appendChild(h);
     var last = opts.points.length ? opts.points[opts.points.length - 1].cents : opts.cents;
     var hasBalance = last !== null && last !== undefined;
@@ -329,6 +442,16 @@
     canvas.setAttribute("aria-label", "Balance history for " + opts.label + ": " + (hasBalance ? formatISK(last) + " ISK now. " : "") + d.text);
     box.appendChild(canvas);
     panel.appendChild(box);
+    if (opts.wallet) {
+      var w = opts.wallet;
+      var describe = function () {
+        canvas.setAttribute("aria-label", "Balance history for " + walletLabel(w) + ": " + (hasBalance ? formatISK(last) + " ISK now. " : "") + d.text);
+      };
+      panel.insertBefore(buildRenameControl(section, w, h, function () {
+        titleText.nodeValue = walletLabel(w);
+        describe();
+      }), h.nextSibling);
+    }
     section.grid.appendChild(panel);
     if (opts.points.length) { drawSpark(section, canvas, opts); }
     else { box.replaceChildren(el("p", "No data points in this range.", "muted")); }
@@ -378,7 +501,7 @@
       buildPanel(section, {
         label: walletLabel(w), cls: "c" + (i % PALETTE.length), color: PALETTE[i % PALETTE.length],
         image: w.kind === "character" ? eveImage("character", w.owner_id, 24) : null,
-        points: byId.get(w.id) || [], cents: w.cents
+        points: byId.get(w.id) || [], cents: w.cents, wallet: w
       });
     });
     if (resp.total) {

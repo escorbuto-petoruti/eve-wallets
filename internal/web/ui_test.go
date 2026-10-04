@@ -328,3 +328,46 @@ func TestAppBuildsSmallMultiplePanels(t *testing.T) {
 		}
 	}
 }
+
+// Corporation wallet panels offer an inline rename. The UI only hides the
+// control for wallets the server would refuse; the server stays the guard.
+func TestAppHasInlineRename(t *testing.T) {
+	js := asset(t, "app.js")
+	for _, want := range []string{
+		"canRename",
+		`w.kind === "corporation"`,
+		"w.division !== 1",
+		`w.name_source !== "esi"`,
+		"buildRenameControl",
+		`"Rename"`, `"Save"`, `"Cancel"`, `"Reset name"`,
+		`"/label"`,
+		`method: "POST"`,
+		`credentials: "same-origin"`,
+		`"Content-Type": "application/json"`,
+		"JSON.stringify",
+		"MAX_NAME",
+		"input.maxLength",
+		`"aria-live", "polite"`, // errors and results are announced
+		`"role", "status"`,
+		`"for", inputId`,  // the field has a label
+		"input.focus()",   // focus moves into the form on open
+		"openBtn.focus()", // and back on close
+		`"Escape"`,
+		"rowNames", // the balances table row is updated too
+		"titleText.nodeValue",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("app.js lacks %q", want)
+		}
+	}
+	// A server-provided name is shown via the DOM, never parsed as HTML.
+	if strings.Contains(js, "innerHTML") || strings.Contains(js, ".style.") {
+		t.Error("app.js must not use innerHTML or inline styles")
+	}
+	css := asset(t, "style.css")
+	for _, want := range []string{".rename-form", ".rename-actions", ".rename-status", ".rename-label"} {
+		if !strings.Contains(css, want) {
+			t.Errorf("style.css lacks %q", want)
+		}
+	}
+}
