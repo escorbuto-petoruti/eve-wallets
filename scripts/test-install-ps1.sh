@@ -86,7 +86,8 @@ fail=0
 clean_env() {
 	env -u VERSION -u INSTALL_DIR -u LOCALAPPDATA -u EVE_WALLETS_RELEASE_BASE \
 		-u EVE_WALLETS_TEST_ARCH -u EVE_WALLETS_TEST_FAIL_REPLACE \
-		-u EVE_WALLETS_ADD_TO_PATH -u EVE_WALLETS_TEST_PATH_FILE "$@"
+		-u EVE_WALLETS_ADD_TO_PATH -u EVE_WALLETS_TEST_PATH_FILE \
+		-u EVE_WALLETS_ADD_SHORTCUT -u EVE_WALLETS_TEST_SHORTCUT_DIR "$@"
 }
 # run <name> <expected rc> <expected output substring> [ENV=VALUE ...]
 run() {
@@ -160,6 +161,25 @@ PF3="$WORK/userpath-exp.txt"
 printf '%s' '%LOCALAPPDATA%/bin' >"$PF3"
 run "PATH entry with %VAR% equal to the install dir is not duplicated" 0 "already on your PATH" INSTALL_DIR="$D7" LOCALAPPDATA="$WORK/inst-exp" EVE_WALLETS_TEST_PATH_FILE="$PF3" EVE_WALLETS_ADD_TO_PATH=1
 [ "$(cat "$PF3")" = '%LOCALAPPDATA%/bin' ] || { echo "FAIL PATH duplicated via %VAR%: $(cat "$PF3")"; fail=1; }
+
+# Shortcut opt-in. EVE_WALLETS_TEST_SHORTCUT_DIR makes the installer write one
+# "<folder-kind> <target> <workdir>" line per shortcut to shortcuts.txt there
+# instead of creating .lnk files (Linux cannot create them).
+D8="$WORK/inst-lnk"
+SD="$WORK/shortcuts"
+run "shortcuts =1 records Desktop and Programs" 0 "shortcuts" INSTALL_DIR="$D8" EVE_WALLETS_TEST_SHORTCUT_DIR="$SD" EVE_WALLETS_ADD_SHORTCUT=1
+want_lnk=$(printf 'Desktop %s/eve-wallets.exe %s\nPrograms %s/eve-wallets.exe %s\n' "$D8" "$D8" "$D8" "$D8")
+[ "$(cat "$SD/shortcuts.txt" 2>/dev/null)" = "$want_lnk" ] || { echo "FAIL shortcuts =1 content: $(cat "$SD/shortcuts.txt" 2>/dev/null)"; fail=1; }
+run "shortcuts second run does not duplicate" 0 "shortcuts" INSTALL_DIR="$D8" EVE_WALLETS_TEST_SHORTCUT_DIR="$SD" EVE_WALLETS_ADD_SHORTCUT=1
+[ "$(cat "$SD/shortcuts.txt" 2>/dev/null)" = "$want_lnk" ] || { echo "FAIL shortcuts duplicated: $(cat "$SD/shortcuts.txt" 2>/dev/null)"; fail=1; }
+
+SD0="$WORK/shortcuts-off"
+run "shortcuts =0 creates none" 0 "no shortcuts" INSTALL_DIR="$D8" EVE_WALLETS_TEST_SHORTCUT_DIR="$SD0" EVE_WALLETS_ADD_SHORTCUT=0
+[ ! -e "$SD0/shortcuts.txt" ] || { echo "FAIL shortcuts created with =0"; fail=1; }
+
+SDU="$WORK/shortcuts-unset"
+run "shortcuts unset without a terminal creates none and says how" 0 "EVE_WALLETS_ADD_SHORTCUT=1" INSTALL_DIR="$D8" EVE_WALLETS_TEST_SHORTCUT_DIR="$SDU"
+[ ! -e "$SDU/shortcuts.txt" ] || { echo "FAIL shortcuts created without consent"; fail=1; }
 
 # iex mode must not kill the host shell and must still report the error.
 rc=0
