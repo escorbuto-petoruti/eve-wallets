@@ -292,15 +292,19 @@ function Install-EveWallets {
     Write-Host ''
     Write-Host 'Next steps:'
     $sessionSep = [IO.Path]::PathSeparator
-    $onPath = $false
-    foreach ($p in ($env:Path -split [regex]::Escape([string]$sessionSep))) {
-        if ($p.TrimEnd('\', '/') -ieq $installDir.TrimEnd('\', '/')) { $onPath = $true }
+    $inSession = $false
+    foreach ($p in ([Environment]::GetEnvironmentVariable('PATH') -split [regex]::Escape([string]$sessionSep))) {
+        if ($p.TrimEnd('\', '/') -ieq $installDir.TrimEnd('\', '/')) { $inSession = $true }
     }
     $userPath = Get-EveUserPath
-    if (Test-EveDirInPath $installDir $userPath) { $onPath = $true }
+    $inUser = Test-EveDirInPath $installDir $userPath
+    $newTerminal = $false
     $addHint = "to add it, set EVE_WALLETS_ADD_TO_PATH=1 (PowerShell: `$env:EVE_WALLETS_ADD_TO_PATH = '1') and run the installer again, or add the folder in Settings > Environment Variables"
-    if ($onPath) {
+    if ($inSession) {
         Write-Host "  - $installDir is already on your PATH"
+    } elseif ($inUser) {
+        $newTerminal = $true
+        Write-Host "  - $installDir is on your user PATH, but this terminal was opened before it was added: open a new terminal to run eve-wallets from anywhere"
     } else {
         $choice = $env:EVE_WALLETS_ADD_TO_PATH
         $add = $false
@@ -315,6 +319,7 @@ function Install-EveWallets {
         if ($add) {
             $trimmed = $userPath.TrimEnd(';')
             if ($trimmed) { Set-EveUserPath "$trimmed;$installDir" } else { Set-EveUserPath $installDir }
+            $newTerminal = $true
             Write-Host "  - added $installDir to your user PATH; open a new terminal to use eve-wallets from anywhere"
         } else {
             Write-Host "  - $installDir was not added to your PATH ($addHint)"
@@ -346,10 +351,14 @@ function Install-EveWallets {
     } else {
         Write-Host "  - no shortcuts created ($lnkHint)"
     }
-    if ($lnkDone) {
-        Write-Host '  - run: double-click the eve-wallets shortcut, or eve-wallets.exe (no arguments starts the server, same as eve-wallets serve); it opens http://localhost:8088, then sign in with EVE SSO'
+    $exeRun = if ($lnkDone) { 'double-click the eve-wallets shortcut, or eve-wallets.exe' } else { 'double-click eve-wallets.exe' }
+    $tail = 'no arguments starts the server, same as eve-wallets serve); it opens http://localhost:8088, then sign in with EVE SSO'
+    if ($inSession) {
+        Write-Host "  - run: eve-wallets serve, or $exeRun ($tail"
+    } elseif ($newTerminal) {
+        Write-Host "  - run: eve-wallets serve from a new terminal (this one cannot find it yet), or $exeRun ($tail"
     } else {
-        Write-Host '  - run: double-click eve-wallets.exe (no arguments starts the server, same as eve-wallets serve; from a new terminal once it is on your PATH: eve-wallets serve); it opens http://localhost:8088, then sign in with EVE SSO'
+        Write-Host "  - run: $exeRun ($tail, or the full path: $(Join-Path $installDir 'eve-wallets.exe') serve"
     }
     Write-Host '  - to stop it: close its window, press Ctrl+C, or use the Quit button in the page'
     Write-Host '  - to update later: run this installer again'

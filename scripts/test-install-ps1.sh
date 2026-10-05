@@ -145,7 +145,7 @@ run "PATH =0 never adds" 0 "not added" INSTALL_DIR="$D5" EVE_WALLETS_TEST_PATH_F
 [ "$(cat "$PF")" = "/usr/bin" ] || { echo "FAIL PATH changed with =0"; fail=1; }
 run "PATH =1 adds the install dir" 0 "added $D5 to your user PATH" INSTALL_DIR="$D5" EVE_WALLETS_TEST_PATH_FILE="$PF" EVE_WALLETS_ADD_TO_PATH=1
 [ "$(cat "$PF")" = "/usr/bin;$D5" ] || { echo "FAIL PATH value: $(cat "$PF")"; fail=1; }
-run "PATH second run does not duplicate" 0 "already on your PATH" INSTALL_DIR="$D5/" EVE_WALLETS_TEST_PATH_FILE="$PF" EVE_WALLETS_ADD_TO_PATH=1
+run "PATH second run does not duplicate" 0 "open a new terminal to run eve-wallets from anywhere" INSTALL_DIR="$D5/" EVE_WALLETS_TEST_PATH_FILE="$PF" EVE_WALLETS_ADD_TO_PATH=1
 [ "$(cat "$PF")" = "/usr/bin;$D5" ] || { echo "FAIL PATH duplicated: $(cat "$PF")"; fail=1; }
 
 # Existing entries are kept byte-for-byte (unexpanded %VAR% references included).
@@ -159,8 +159,17 @@ run "PATH keeps other entries untouched" 0 "added $D6 to your user PATH" INSTALL
 D7="$WORK/inst-exp/bin"
 PF3="$WORK/userpath-exp.txt"
 printf '%s' '%LOCALAPPDATA%/bin' >"$PF3"
-run "PATH entry with %VAR% equal to the install dir is not duplicated" 0 "already on your PATH" INSTALL_DIR="$D7" LOCALAPPDATA="$WORK/inst-exp" EVE_WALLETS_TEST_PATH_FILE="$PF3" EVE_WALLETS_ADD_TO_PATH=1
+run "PATH entry with %VAR% equal to the install dir is not duplicated" 0 "open a new terminal to run eve-wallets from anywhere" INSTALL_DIR="$D7" LOCALAPPDATA="$WORK/inst-exp" EVE_WALLETS_TEST_PATH_FILE="$PF3" EVE_WALLETS_ADD_TO_PATH=1
 [ "$(cat "$PF3")" = '%LOCALAPPDATA%/bin' ] || { echo "FAIL PATH duplicated via %VAR%: $(cat "$PF3")"; fail=1; }
+
+# User PATH only: this terminal cannot see it, so it must not claim it is already there.
+out=$(clean_env INSTALL_DIR="$D5" EVE_WALLETS_TEST_PATH_FILE="$PF" EVE_WALLETS_RELEASE_BASE="$BASE" pwsh -NoProfile -NonInteractive -File "$ROOT/install.ps1" 2>&1) || true
+if printf '%s' "$out" | grep -qF "already on your PATH"; then echo "FAIL user-PATH-only claims already on PATH"; fail=1; else echo "ok   user-PATH-only does not say already on your PATH"; fi
+# Session PATH contains the install dir.
+D9="$WORK/inst-session"
+run "install dir in the session PATH says already on your PATH" 0 "already on your PATH" INSTALL_DIR="$D9" PATH="$D9:$PATH" EVE_WALLETS_TEST_PATH_FILE="$WORK/userpath-none.txt"
+# In neither source: still prints the hint.
+run "dir in neither PATH still prints the hint" 0 "was not added to your PATH" INSTALL_DIR="$WORK/inst-neither" EVE_WALLETS_TEST_PATH_FILE="$WORK/userpath-none2.txt"
 
 # Shortcut opt-in. EVE_WALLETS_TEST_SHORTCUT_DIR makes the installer write one
 # "<folder-kind> <target> <workdir>" line per shortcut to shortcuts.txt there
