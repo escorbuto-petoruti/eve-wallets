@@ -209,6 +209,10 @@ Data collected after the migration is lost by restoring. Existing wallets are li
 
 The page shows a balance history chart with one line per selected wallet, an optional Total line, time ranges (24 h, 7 d, 30 d, All), a table of latest balances, and the result of the last collection. Each wallet panel (not the Total) has a Movements button that opens its journal (see [Movements](#movements)). `/api/status` also reports `journal_points`, the journal balances the last backfill saw (0 when it did not run); the page does not display it.
 
+### Quitting from the page
+
+The signed-in header has a Quit button. It asks for confirmation inline ("Stop"/"Cancel"), then calls `POST /api/shutdown`; the page then says "eve-wallets stopped. You can close this tab." and the whole process shuts down gracefully, exactly as with Ctrl+C (exit code 0). Snapshots pause until you start it again; the journal is backfilled on the next start (ESI keeps 30 days).
+
 ## Loyalty points
 
 The page has a **Loyalty points** tab, the last tab of the tab bar (after the wallet owners), with, per character, a table of corporation logo, name and points (right aligned, with thousands separators, most points first). The tab loads `/api/loyalty` when first opened and again when reopened with data older than a minute, and the time-range card is hidden while it is active. The collector reads `GET /characters/{id}/loyalty/points` for every character whose token has the scope `esi-characters.read_loyalty.v1` and keeps only the latest snapshot per character and corporation in the `loyalty_points` table (schema v5, created in place); corporations ESI no longer returns are removed. Corporation names come from the public `POST /universe/names` (one batched call per cycle for the ids not cached yet) and are cached in `corporation_names`. When a lookup fails the page shows `Corp <id>`.
@@ -273,6 +277,7 @@ Division names come from ESI during collection. The login already requests the s
 
 - The server binds only to loopback and refuses other addresses. It also rejects requests whose `Host` is not a loopback name (DNS rebinding defense). It is not hardened for the internet and has no HTTPS.
 - Refresh tokens are stored in plaintext in the SQLite file (directory 0700, file 0600), so anyone who can read that file can use them. They are never logged or returned by the API. To revoke the access, remove the application from the third-party applications page of your EVE account; also delete the database if you stop using the app.
+- `POST /api/shutdown` stops the whole process (collector included), so it is guarded like sign-out and more: it needs your session, a same-origin request (`Sec-Fetch-Site` first, then `Origin`/`Referer`; `Origin: null` or cross-site is refused with 403) and the loopback `Host` check, and it answers 202 before shutting down. Another website cannot trigger it, and a signed-out visitor gets 401. It stops the server once however many times it is called.
 - A rotated refresh token is saved before it is used.
 - The page works offline: Chart.js is vendored and hash-verified (see `internal/web/static/VENDORED.md`).
 

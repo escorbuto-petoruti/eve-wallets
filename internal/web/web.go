@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/escorbuto-petoruti/eve-wallets/internal/store"
@@ -41,12 +42,17 @@ type Deps struct {
 	// AllowedPort is the port of the listener: a Host header may carry it (or no
 	// port) next to a loopback name. Any other port is refused.
 	AllowedPort string
+	// Shutdown asks the process to stop gracefully (POST /api/shutdown). The
+	// server calls it at most once, after the 202 answer is written. Without
+	// it the endpoint answers 404.
+	Shutdown func()
 }
 
 type server struct {
-	deps  Deps
-	flows *loginFlows
-	moves *pendingMoves
+	deps     Deps
+	stopOnce sync.Once
+	flows    *loginFlows
+	moves    *pendingMoves
 }
 
 // tokenSaved tells the owner of the token cache that a sign-in stored new
@@ -85,6 +91,7 @@ func New(deps Deps) http.Handler {
 	mux.HandleFunc("/api/loyalty/history", requireUser(s.loyaltyHistory))
 	mux.HandleFunc("/api/series", requireUser(s.series))
 	mux.HandleFunc("/api/status", requireUser(s.status))
+	mux.HandleFunc("POST /api/shutdown", requireUser(s.shutdown))
 	return s.guard(s.withSession(mux))
 }
 
@@ -93,6 +100,7 @@ var postPaths = map[string]bool{
 	"/auth/logout":         true,
 	"/auth/move-character": true,
 	"/auth/cancel-move":    true,
+	"/api/shutdown":        true,
 }
 
 // walletLabelPath matches /api/wallets/{id}/label, the one POST route with a
@@ -108,8 +116,8 @@ func walletLabelPath(p string) bool {
 
 // guard sets the hardening headers on every response, refuses a Host that is not
 // the local app (DNS rebinding) and allows only GET and HEAD, except for the
-// POSTs of /auth/logout, /auth/move-character, /auth/cancel-move and
-// /api/wallets/{id}/label.
+// POSTs of /auth/logout, /auth/move-character, /auth/cancel-move,
+// /api/shutdown and /api/wallets/{id}/label.
 func (s *server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
@@ -446,4 +454,21 @@ func serverError(w http.ResponseWriter, err error) {
 		return
 	}
 	writeError(w, http.StatusInternalServerError, "internal error")
+}
+
+// shutdown stops the whole process through Deps.Shutdown. It needs a session
+// and passes the sign-out same-origin check (the Host gate already ran in
+// guard), so another website cannot stop the server. It answers 202 first and
+// triggers the callback once, however many times it is called.
+func (s *server) shutdown(w http.ResponseWriter, r *http.Request, _ store.User) {
+	if s.deps.Shutdown == nil {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if !s.sameOrigin(r) {
+		writeError(w, http.StatusForbidden, "cross-site request refused")
+		return
+	}
+	writeJSON(w, r, http.StatusAccepted, map[string]string{"status": "stopping"})
+	s.stopOnce.Do(s.deps.Shutdown)
 }

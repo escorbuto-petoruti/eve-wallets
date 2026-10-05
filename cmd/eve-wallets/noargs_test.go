@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"net"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -73,5 +74,38 @@ func TestNoArgumentsDependOnTheOS(t *testing.T) {
 				t.Errorf("exit = %d, want 0", code)
 			}
 		})
+	}
+}
+
+// POST /api/shutdown stops serve the same way Ctrl+C does: the context passed
+// to run is never cancelled here, yet serve returns 0 and stops listening.
+func TestServeShutsDownThroughTheQuitEndpoint(t *testing.T) {
+	h := newHarness(t, map[string]string{"HOME": "/home/u"})
+	base, _, done := startServe(t, h, "--no-collect")
+	c := signIn(t, base)
+
+	req, err := http.NewRequest(http.MethodPost, base+"/api/shutdown", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", base)
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("shutdown status = %d, want 202", resp.StatusCode)
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Errorf("exit = %d; stderr = %q", code, h.err.String())
+		}
+	case <-time.After(15 * time.Second): // Shutdown may wait out a speculative idle connection
+		t.Fatal("serve did not stop")
+	}
+	if _, err := http.Get(base + "/"); err == nil {
+		t.Error("server still accepting connections after shutdown")
 	}
 }

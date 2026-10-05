@@ -50,6 +50,11 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .topbar { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; }
 .user-bar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
 .user-bar form { margin: 0; }
+.quit { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; }
+.quit-confirm { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; }
+.quit-confirm button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.quit-error { margin: 0; font-size: .85rem; }
+.quit-error:empty { display: none; }
 a.button {
   display: inline-block;
   padding: .45rem 1rem;

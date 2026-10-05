@@ -362,6 +362,11 @@ func runServe(ctx context.Context, args []string, d deps) int {
 		return 1
 	}
 
+	// The Quit button cancels this context, which is the same path as Ctrl+C:
+	// the loop stops, the server drains and serve returns 0.
+	ctx, stopServe := context.WithCancel(ctx)
+	defer stopServe()
+
 	var (
 		mu     sync.Mutex
 		status web.StatusSnapshot
@@ -416,6 +421,7 @@ func runServe(ctx context.Context, args []string, d deps) int {
 			OnLogin:      onLogin,
 			OnTokenSaved: onTokenSaved,
 			AllowedPort:  listenPort(ln.Addr().String()),
+			Shutdown:     stopServe,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
