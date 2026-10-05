@@ -102,7 +102,7 @@ A source build reports the version `dev`.
 eve-wallets serve
 ```
 
-On Windows, `eve-wallets serve` run in a terminal opens <http://localhost:8088> in your browser by itself once the server is up; elsewhere (or with `--no-open`) open it yourself. Then choose "Sign in with EVE SSO". `eve-wallets version` prints the installed version.
+On Windows, `eve-wallets serve` run in a terminal opens <http://localhost:8088> in your browser by itself once the server is up; elsewhere (or with `--no-open`) open it yourself. On Windows, running `eve-wallets` with no arguments (which is what a double-click does) is the same as `eve-wallets serve`; on Linux and macOS no arguments print the usage and exit with code 2. `serve` prints how to stop it: close the console window, press Ctrl+C, or use the Quit button in the page. Then choose "Sign in with EVE SSO". `eve-wallets version` prints the installed version.
 
 ### Sign-in and port 8088
 
