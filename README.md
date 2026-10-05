@@ -64,6 +64,17 @@ notepad install.ps1
 
 To update, run the same installer again. If scripts are blocked on your machine, use `powershell -ExecutionPolicy Bypass -File .\install.ps1`.
 
+#### If Microsoft Defender blocks `eve-wallets.exe`
+
+The Windows binaries are not code-signed, and Microsoft Defender can flag unsigned programs with a machine-learning heuristic. On the one machine where this was seen, the releases `v0.1.1` and `v0.1.2` were quarantined as `Trojan:Win32/Bearfoos.A!ml`, and PowerShell reported that the file "contains a virus or potentially unwanted software". We believe it is a false positive: the program is open source, and the `v0.1.2` release binary was rebuilt from the tagged source and came out byte-identical. We cannot rule out that your Defender reaches the same verdict, nor that it does not.
+
+If it happens:
+
+1. See what was detected in *Windows Security > Virus & threat protection > Protection history*, or run `Get-MpThreat | Select-Object ThreatName, SeverityID`.
+2. The installer has already checked the zip against `checksums.txt`, so the file is the one published on the releases page. If you would rather not rely on that, build it yourself (see [From source](#from-source)). In our tests on one machine, local builds were not flagged, but that can change.
+3. If you decide to trust it, restore the file from Protection history (*Allow on device*) and run it. Avoid turning Defender off or excluding whole folders.
+4. You can report the false positive to Microsoft at https://www.microsoft.com/en-us/wdsi/filesubmission.
+
 ### Manual download (all platforms)
 
 Download the archive for your platform and `checksums.txt` from the releases page, then verify and extract it:
