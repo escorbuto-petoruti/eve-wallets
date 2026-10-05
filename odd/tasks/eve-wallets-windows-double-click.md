@@ -31,7 +31,7 @@ Delegated direct: one writer (3 tasks across Go, web UI, PowerShell and the harn
 Created 2026-10-04. Route: delegated direct (one writer), all three tasks.
 - F1 done, commit 75553ab. RED: TestNoArgumentsDependOnTheOS failed (windows printed the usage); GREEN after `run` maps no args to `serve` on windows and `serve` prints "Close this window, press Ctrl+C or use the Quit button in the page to stop." Usage and README updated.
 - F2 done, commit cc77da0. RED: web tests did not compile (no Deps.Shutdown), cmd test got 404, markup tests failed; GREEN with `POST /api/shutdown` (requireUser + sameOrigin + loopback Host, 202, sync.Once), `runServe` wiring through a context cancel (same path as Ctrl+C, exit 0), Quit button with inline confirmation and stopped state. README security note.
-- F3 done, commit recorded below. RED: 4 new harness cases failed; GREEN after `New-EveShortcuts` (opt-in prompt, EVE_WALLETS_ADD_SHORTCUT, EVE_WALLETS_TEST_SHORTCUT_DIR hook). README Windows section updated.
+- F3 done, commit 2871f8d. RED: 4 new harness cases failed; GREEN after `New-EveShortcuts` (opt-in prompt, EVE_WALLETS_ADD_SHORTCUT, EVE_WALLETS_TEST_SHORTCUT_DIR hook). README Windows section updated.
 - Not verified: real Windows (double-click console, PS 5.1), real `.lnk` creation via WScript.Shell and redirected folders, the Quit flow in a real browser (only markup/JS structure tests and `node --check`), the [y/N] shortcut prompt in a real console.
 - Known pre-existing flake: TestServeCollectsAndShutsDownCleanly sometimes needs more than its 5s to stop under repeated or -race runs (reproduced on the F1 commit); not changed here.
 
