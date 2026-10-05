@@ -42,6 +42,7 @@ const (
 )
 
 const usage = `Usage:
+  eve-wallets            (no arguments: runs serve on Windows, prints this help elsewhere)
   eve-wallets version
   eve-wallets update [--check] [--force]
   eve-wallets collect [--db PATH]
@@ -111,8 +112,17 @@ func main() {
 // run executes one command line and returns the process exit code.
 func run(ctx context.Context, args []string, d deps) int {
 	if len(args) == 0 {
-		fmt.Fprint(d.stderr, usage)
-		return 2
+		// A double-click on Windows passes no arguments: start the server
+		// instead of flashing the usage in a console that closes at once.
+		goos := d.goos
+		if goos == "" {
+			goos = runtime.GOOS
+		}
+		if goos != "windows" {
+			fmt.Fprint(d.stderr, usage)
+			return 2
+		}
+		args = []string{"serve"}
 	}
 	switch args[0] {
 	case "-h", "--help":
@@ -352,6 +362,11 @@ func runServe(ctx context.Context, args []string, d deps) int {
 		return 1
 	}
 
+	// The Quit button cancels this context, which is the same path as Ctrl+C:
+	// the loop stops, the server drains and serve returns 0.
+	ctx, stopServe := context.WithCancel(ctx)
+	defer stopServe()
+
 	var (
 		mu     sync.Mutex
 		status web.StatusSnapshot
@@ -406,6 +421,7 @@ func runServe(ctx context.Context, args []string, d deps) int {
 			OnLogin:      onLogin,
 			OnTokenSaved: onTokenSaved,
 			AllowedPort:  listenPort(ln.Addr().String()),
+			Shutdown:     stopServe,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -416,6 +432,7 @@ func runServe(ctx context.Context, args []string, d deps) int {
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(ln) }()
 	fmt.Fprintf(d.stdout, "Serving on http://%s (database %s)\n", ln.Addr(), path)
+	fmt.Fprintln(d.stdout, "Close this window, press Ctrl+C or use the Quit button in the page to stop.")
 	if w := ssoPortWarning(ln.Addr().String()); w != "" {
 		fmt.Fprintln(d.stderr, w)
 	}

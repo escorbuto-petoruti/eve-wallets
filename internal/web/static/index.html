@@ -18,6 +18,15 @@
       <form method="post" action="/auth/logout">
         <button type="submit">Sign out</button>
       </form>
+      <div class="quit">
+        <button type="button" id="quit-open">Quit</button>
+        <div id="quit-confirm" class="quit-confirm" role="group" aria-label="Confirm quit" hidden>
+          <span>Stop eve-wallets? Snapshots pause until you start it again.</span>
+          <button type="button" id="quit-yes" class="primary">Stop</button>
+          <button type="button" id="quit-no">Cancel</button>
+        </div>
+        <p id="quit-error" class="bad quit-error" role="status" aria-live="polite"></p>
+      </div>
     </div>
   </div>
   <p id="updated" class="muted"></p>
@@ -28,6 +37,11 @@
     <p id="session-message" class="warn" role="status" aria-live="polite"></p>
     <p>Sign in with your EVE Online character to see its wallets.</p>
     <p><a class="button primary" href="/auth/login">Sign in with EVE Online</a></p>
+  </section>
+
+  <section id="stopped" class="card" aria-labelledby="stopped-title" hidden>
+    <h2 id="stopped-title">Stopped</h2>
+    <p role="status" aria-live="polite">eve-wallets stopped. You can close this tab.</p>
   </section>
 
   <div id="signed-in" hidden>

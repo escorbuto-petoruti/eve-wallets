@@ -101,6 +101,55 @@
     $("signed-out").hidden = false;
   }
 
+  // showStopped replaces the whole page once the server accepted the shutdown:
+  // nothing can load any more, so polling stops and every old view is dropped.
+  function showStopped() {
+    session.signedIn = false;
+    session.epoch++;
+    stopPolling();
+    clearSections();
+    clearLoyalty();
+    state.hasData = false;
+    $("controls").hidden = true;
+    $("tabs").hidden = true;
+    $("signed-in").hidden = true;
+    $("user-bar").hidden = true;
+    $("signed-out").hidden = true;
+    $("stopped").hidden = false;
+  }
+
+  // wireQuit sets up the Quit button: a first click only asks for confirmation
+  // inline; the second one calls the shutdown endpoint.
+  function wireQuit() {
+    var openBtn = $("quit-open");
+    var box = $("quit-confirm");
+    var yes = $("quit-yes");
+    var no = $("quit-no");
+    var err = $("quit-error");
+    function setConfirm(open) {
+      box.hidden = !open;
+      openBtn.hidden = open;
+      err.textContent = "";
+      (open ? no : openBtn).focus();
+    }
+    openBtn.addEventListener("click", function () { setConfirm(true); });
+    no.addEventListener("click", function () { setConfirm(false); });
+    box.addEventListener("keydown", function (e) { if (e.key === "Escape") { setConfirm(false); } });
+    yes.addEventListener("click", function () {
+      yes.disabled = true;
+      no.disabled = true;
+      postJSON("/api/shutdown", {}).then(function () {
+        showStopped();
+      }).catch(function (e) {
+        yes.disabled = false;
+        no.disabled = false;
+        if (e.unauthorized) { return; } // the signed-out view is already shown
+        setConfirm(false);
+        err.textContent = "Could not stop eve-wallets: " + e.message;
+      });
+    });
+  }
+
   function showSignedIn(me) {
     session.signedIn = true;
     session.epoch++;
@@ -999,5 +1048,6 @@
     });
   }
 
+  wireQuit();
   init();
 })();

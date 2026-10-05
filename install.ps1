@@ -15,11 +15,21 @@
 #                             (default No) in an interactive terminal, and
 #                             change nothing otherwise (for example `irm | iex`
 #                             automation).
+#   EVE_WALLETS_ADD_SHORTCUT  1 creates the Desktop and Start menu shortcuts
+#                             (named eve-wallets) without asking; 0 never asks
+#                             nor creates. Unset: ask [y/N] (default No) in an
+#                             interactive terminal, and create nothing
+#                             otherwise. Running the installer again replaces
+#                             them.
 #   EVE_WALLETS_TEST_ARCH     test only: pretend the machine architecture is this
 #   EVE_WALLETS_TEST_FAIL_REPLACE  test only: make the exe replacement fail
 #   EVE_WALLETS_TEST_PATH_FILE     test only: a file that stands in for the user
 #                             PATH value (read and written instead of the
 #                             user PATH registry value; Linux has no registry)
+#   EVE_WALLETS_TEST_SHORTCUT_DIR  test only: a directory where, instead of
+#                             creating .lnk files (Linux cannot), the installer
+#                             writes shortcuts.txt with one line per shortcut:
+#                             "<folder-kind> <target> <workdir>"
 #
 # The installer never needs administrator rights. It only ever touches your
 # user PATH (never the machine PATH), only when you opt in, and it only appends
@@ -90,6 +100,35 @@ function Test-EveInteractive {
         return $true
     } catch {
         return $false
+    }
+}
+
+# Creates (or replaces) the eve-wallets.lnk shortcuts in the user's Desktop and Start Menu
+# Programs folders, resolved with GetFolderPath so redirected folders work. They start the exe
+# with no arguments, which runs the server. With EVE_WALLETS_TEST_SHORTCUT_DIR it records the
+# intended shortcuts in a text file instead (the whole file is rewritten, so it is idempotent).
+function New-EveShortcuts([string]$target, [string]$workDir) {
+    if ($env:EVE_WALLETS_TEST_SHORTCUT_DIR) {
+        New-Item -ItemType Directory -Force -Path $env:EVE_WALLETS_TEST_SHORTCUT_DIR | Out-Null
+        $lines = foreach ($kind in @('Desktop', 'Programs')) { "$kind $target $workDir" }
+        [IO.File]::WriteAllText((Join-Path $env:EVE_WALLETS_TEST_SHORTCUT_DIR 'shortcuts.txt'), (($lines -join "`n") + "`n"))
+        return
+    }
+    if (-not (Test-EveWindows)) { throw 'shortcuts can only be created on Windows' }
+    $shell = New-Object -ComObject WScript.Shell
+    try {
+        foreach ($kind in @('Desktop', 'Programs')) {
+            $folder = [Environment]::GetFolderPath($kind)
+            if (-not $folder) { throw "could not find your $kind folder" }
+            $lnk = $shell.CreateShortcut((Join-Path $folder 'eve-wallets.lnk'))
+            $lnk.TargetPath = $target
+            $lnk.WorkingDirectory = $workDir
+            $lnk.Description = 'eve-wallets: EVE Online wallet charts (starts the local server and opens the page)'
+            $lnk.Save()
+            [void][Runtime.InteropServices.Marshal]::ReleaseComObject($lnk)
+        }
+    } finally {
+        [void][Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
     }
 }
 
@@ -281,7 +320,38 @@ function Install-EveWallets {
             Write-Host "  - $installDir was not added to your PATH ($addHint)"
         }
     }
-    Write-Host '  - run: eve-wallets.exe serve (from a new terminal once it is on your PATH: eve-wallets serve); it opens http://localhost:8088, then sign in with EVE SSO'
+
+    $lnkHint = "to create them, set EVE_WALLETS_ADD_SHORTCUT=1 (PowerShell: `$env:EVE_WALLETS_ADD_SHORTCUT = '1') and run the installer again"
+    $lnkChoice = $env:EVE_WALLETS_ADD_SHORTCUT
+    $makeLnk = $false
+    if ($lnkChoice -eq '1') {
+        $makeLnk = $true
+    } elseif ($lnkChoice -ne '0' -and (Test-EveInteractive)) {
+        try {
+            $answer = Read-Host 'Create shortcuts for eve-wallets on your Desktop and Start menu? [y/N]'
+            $makeLnk = ($answer -match '^\s*(y|yes)\s*$')
+        } catch { $makeLnk = $false }
+    }
+    $lnkDone = $false
+    if ($makeLnk) {
+        try {
+            New-EveShortcuts (Join-Path $installDir 'eve-wallets.exe') $installDir
+            $lnkDone = $true
+            Write-Host '  - created shortcuts for eve-wallets on your Desktop and Start menu; double-click one to start it'
+        } catch {
+            Write-Host "  - could not create the shortcuts ($($_.Exception.Message)); the install itself is fine"
+        }
+    } elseif ($lnkChoice -eq '0') {
+        Write-Host '  - no shortcuts created (EVE_WALLETS_ADD_SHORTCUT=0)'
+    } else {
+        Write-Host "  - no shortcuts created ($lnkHint)"
+    }
+    if ($lnkDone) {
+        Write-Host '  - run: double-click the eve-wallets shortcut, or eve-wallets.exe (no arguments starts the server, same as eve-wallets serve); it opens http://localhost:8088, then sign in with EVE SSO'
+    } else {
+        Write-Host '  - run: double-click eve-wallets.exe (no arguments starts the server, same as eve-wallets serve; from a new terminal once it is on your PATH: eve-wallets serve); it opens http://localhost:8088, then sign in with EVE SSO'
+    }
+    Write-Host '  - to stop it: close its window, press Ctrl+C, or use the Quit button in the page'
     Write-Host '  - to update later: run this installer again'
 }
 
