@@ -10,10 +10,101 @@
 #   EVE_WALLETS_RELEASE_BASE  releases URL (default: the GitHub releases page);
 #                             <base>/latest redirects to <base>/tag/<tag> and
 #                             assets live under <base>/download/<tag>/
+#   EVE_WALLETS_ADD_TO_PATH   1 adds the install dir to your user PATH without
+#                             asking; 0 never asks nor adds. Unset: ask [y/N]
+#                             (default No) in an interactive terminal, and
+#                             change nothing otherwise (for example `irm | iex`
+#                             automation).
 #   EVE_WALLETS_TEST_ARCH     test only: pretend the machine architecture is this
 #   EVE_WALLETS_TEST_FAIL_REPLACE  test only: make the exe replacement fail
+#   EVE_WALLETS_TEST_PATH_FILE     test only: a file that stands in for the user
+#                             PATH value (read and written instead of the
+#                             user PATH registry value; Linux has no registry)
 #
-# The installer never needs administrator rights and never changes your PATH.
+# The installer never needs administrator rights. It only ever touches your
+# user PATH (never the machine PATH), only when you opt in, and it only appends
+# its own directory: other entries and the value type are left as they were.
+
+# The real user PATH lives in HKCU\Environment. It is read and written through the registry
+# so %VAR% references stay unexpanded and the value type (usually REG_EXPAND_SZ) is kept:
+# [Environment]::Get/SetEnvironmentVariable would expand every entry and write plain text.
+function Test-EveWindows { return ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) }
+
+function Get-EveUserPath {
+    if ($env:EVE_WALLETS_TEST_PATH_FILE) {
+        if (Test-Path -LiteralPath $env:EVE_WALLETS_TEST_PATH_FILE) {
+            return [string](Get-Content -Raw -LiteralPath $env:EVE_WALLETS_TEST_PATH_FILE)
+        }
+        return ''
+    }
+    if (-not (Test-EveWindows)) { return '' }
+    $key = $null
+    try {
+        $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $false)
+        if (-not $key) { return '' }
+        return [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+    } catch {
+        throw "could not read your user PATH from the registry ($($_.Exception.Message)); nothing was changed"
+    } finally {
+        if ($key) { $key.Dispose() }
+    }
+}
+
+function Set-EveUserPath([string]$value) {
+    if ($env:EVE_WALLETS_TEST_PATH_FILE) {
+        [IO.File]::WriteAllText($env:EVE_WALLETS_TEST_PATH_FILE, $value)
+        return
+    }
+    if (-not (Test-EveWindows)) { throw 'the user PATH can only be changed on Windows' }
+    $key = $null
+    try {
+        $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+        $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+        if ($key.GetValueNames() -contains 'Path') {
+            $existing = $key.GetValueKind('Path')
+            if ($existing -eq [Microsoft.Win32.RegistryValueKind]::String -or $existing -eq [Microsoft.Win32.RegistryValueKind]::ExpandString) {
+                $kind = $existing
+            }
+        }
+        $key.SetValue('Path', $value, $kind)
+    } catch {
+        throw "could not write your user PATH to the registry ($($_.Exception.Message)); it was left unchanged"
+    } finally {
+        if ($key) { $key.Dispose() }
+    }
+    # Direct registry writes do not tell running programs. Setting and removing a throwaway
+    # user variable makes .NET broadcast WM_SETTINGCHANGE so new terminals see the new PATH.
+    try {
+        [Environment]::SetEnvironmentVariable('EVE_WALLETS_PATH_REFRESH', '1', 'User')
+        [Environment]::SetEnvironmentVariable('EVE_WALLETS_PATH_REFRESH', $null, 'User')
+    } catch {
+        Write-Host "  (your PATH was saved, but running programs were not notified; sign out and in, or open a new terminal)"
+    }
+}
+
+function Test-EveInteractive {
+    try {
+        if (-not [Environment]::UserInteractive) { return $false }
+        if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { return $false }
+        if ([Environment]::GetCommandLineArgs() -contains '-NonInteractive') { return $false }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+# True when $dir is one of the ';'-separated entries of a user PATH value (case-insensitive,
+# trailing slashes ignored), compared both as written and with %VAR% references expanded.
+function Test-EveDirInPath([string]$dir, [string]$pathValue) {
+    $want = $dir.TrimEnd('\', '/')
+    foreach ($p in ($pathValue -split ';')) {
+        $entry = $p.Trim()
+        if ($entry.TrimEnd('\', '/') -ieq $want) { return $true }
+        $expanded = [Environment]::ExpandEnvironmentVariables($entry)
+        if ($expanded.TrimEnd('\', '/') -ieq $want) { return $true }
+    }
+    return $false
+}
 
 function Install-EveWallets {
     $ErrorActionPreference = 'Stop'
@@ -161,15 +252,36 @@ function Install-EveWallets {
 
     Write-Host ''
     Write-Host 'Next steps:'
+    $sessionSep = [IO.Path]::PathSeparator
     $onPath = $false
-    foreach ($p in ($env:Path -split [IO.Path]::PathSeparator)) {
-        if ($p.TrimEnd('\', '/') -eq $installDir.TrimEnd('\', '/')) { $onPath = $true }
+    foreach ($p in ($env:Path -split [regex]::Escape([string]$sessionSep))) {
+        if ($p.TrimEnd('\', '/') -ieq $installDir.TrimEnd('\', '/')) { $onPath = $true }
     }
-    if (-not $onPath) {
-        Write-Host "  - add $installDir to your PATH (new terminals pick it up), e.g.:"
-        Write-Host "      [Environment]::SetEnvironmentVariable('Path', '$installDir;' + [Environment]::GetEnvironmentVariable('Path', 'User'), 'User')"
+    $userPath = Get-EveUserPath
+    if (Test-EveDirInPath $installDir $userPath) { $onPath = $true }
+    $addHint = "to add it, set EVE_WALLETS_ADD_TO_PATH=1 (PowerShell: `$env:EVE_WALLETS_ADD_TO_PATH = '1') and run the installer again, or add the folder in Settings > Environment Variables"
+    if ($onPath) {
+        Write-Host "  - $installDir is already on your PATH"
+    } else {
+        $choice = $env:EVE_WALLETS_ADD_TO_PATH
+        $add = $false
+        if ($choice -eq '1') {
+            $add = $true
+        } elseif ($choice -ne '0' -and (Test-EveInteractive)) {
+            try {
+                $answer = Read-Host "Add $installDir to your user PATH? [y/N]"
+                $add = ($answer -match '^\s*(y|yes)\s*$')
+            } catch { $add = $false }
+        }
+        if ($add) {
+            $trimmed = $userPath.TrimEnd(';')
+            if ($trimmed) { Set-EveUserPath "$trimmed;$installDir" } else { Set-EveUserPath $installDir }
+            Write-Host "  - added $installDir to your user PATH; open a new terminal to use eve-wallets from anywhere"
+        } else {
+            Write-Host "  - $installDir was not added to your PATH ($addHint)"
+        }
     }
-    Write-Host '  - run: eve-wallets.exe serve, then open http://localhost:8088 and sign in with EVE SSO'
+    Write-Host '  - run: eve-wallets.exe serve (from a new terminal once it is on your PATH: eve-wallets serve); it opens http://localhost:8088, then sign in with EVE SSO'
     Write-Host '  - to update later: run this installer again'
 }
 

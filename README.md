@@ -52,7 +52,7 @@ In PowerShell (5.1 or 7), no administrator rights needed:
 irm https://raw.githubusercontent.com/escorbuto-petoruti/eve-wallets/main/install.ps1 | iex
 ```
 
-It downloads the latest release zip, verifies its SHA-256 against `checksums.txt` before installing anything, and puts `eve-wallets.exe` in `%LOCALAPPDATA%\eve-wallets\bin`. Options are environment variables: `$env:VERSION = 'vX.Y.Z'` installs a specific release and `$env:INSTALL_DIR = 'DIR'` another directory. An existing binary is kept as `eve-wallets.exe.bak-prev`. It does not change your `PATH`: if the directory is not on it, the installer prints the command to add it. Only Windows amd64 is supported. If `eve-wallets.exe` is running, stop it first (the installer cannot replace a running program and says so).
+It downloads the latest release zip, verifies its SHA-256 against `checksums.txt` before installing anything, and puts `eve-wallets.exe` in `%LOCALAPPDATA%\eve-wallets\bin`. Options are environment variables: `$env:VERSION = 'vX.Y.Z'` installs a specific release and `$env:INSTALL_DIR = 'DIR'` another directory. An existing binary is kept as `eve-wallets.exe.bak-prev`. It needs no administrator rights. If the directory is not on your `PATH`, in an interactive terminal it asks `Add <dir> to your user PATH? [y/N]` (default No); say yes and a new terminal finds `eve-wallets`. Only the user PATH is touched, never the machine PATH; it only appends its folder and leaves your other entries (including `%VAR%` references) and the value type as they were, and running it again does not duplicate the entry (an entry like `%LOCALAPPDATA%\eve-wallets\bin` counts as present). `$env:EVE_WALLETS_ADD_TO_PATH = '1'` adds it without asking and `'0'` never asks nor adds; with it unset and no interactive terminal (for example automation through `irm | iex`) nothing changes and the installer prints how to add it. Only Windows amd64 is supported. If `eve-wallets.exe` is running, stop it first (the installer cannot replace a running program and says so).
 
 If you prefer to read it before running it:
 
@@ -91,7 +91,7 @@ A source build reports the version `dev`.
 eve-wallets serve
 ```
 
-Open <http://localhost:8088> and choose "Sign in with EVE SSO". `eve-wallets version` prints the installed version.
+On Windows, `eve-wallets serve` run in a terminal opens <http://localhost:8088> in your browser by itself once the server is up; elsewhere (or with `--no-open`) open it yourself. Then choose "Sign in with EVE SSO". `eve-wallets version` prints the installed version.
 
 ### Sign-in and port 8088
 
@@ -120,7 +120,7 @@ A signed-in user can register more characters under the same account: use "Add c
 
 | Command | What it does |
 |---------|--------------|
-| `eve-wallets serve [--addr 127.0.0.1:8088] [--db PATH] [--every 30m] [--no-collect] [--no-backfill]` | Serves the page and the sign-in and, in the background, takes a snapshot and backfills the journal every cycle. |
+| `eve-wallets serve [--addr 127.0.0.1:8088] [--db PATH] [--every 30m] [--no-collect] [--no-backfill] [--open \| --no-open]` | Serves the page and the sign-in and, in the background, takes a snapshot and backfills the journal every cycle. |
 | `eve-wallets collect [--db PATH]` | One snapshot of every wallet of every registered character, prints a summary. |
 | `eve-wallets backfill [--db PATH]` | Stores journal balances of the last 30 days. Idempotent. `serve` runs it every cycle unless `--no-backfill` is given, so run it by hand only for a one-off backfill without `serve`. |
 | `eve-wallets wallets [--db PATH]` | Lists the wallets (id, kind, owner, division, displayed name and its source). No network. |
@@ -135,6 +135,7 @@ A signed-in user can register more characters under the same account: use "Add c
 - `--addr`: default `127.0.0.1:8088`. Only loopback (`127.0.0.1`, `::1`, `localhost`) is accepted; anything else exits with code 2.
 - `--every`: pause between collection cycles, default `30m`, minimum `1m`.
 - `--no-collect`: serve existing data without calling ESI (a login then does not trigger a collection).
+- `--open` / `--no-open`: open the page in the default browser after the server is up, or never. The default is on only on Windows when stdout is a terminal (a service or scheduled task never opens one); `--open` forces it on any OS (`xdg-open` on Linux, `open` on macOS) and `--no-open` wins. It only opens for a loopback address, and a failure to launch the browser prints one line on stderr while the server keeps running. Passing both exits with code 2.
 - `--no-backfill`: each cycle only takes snapshots (like `collect`) and does not read the journals. The cycle skips the backfill by itself when its snapshot was rate limited.
 
 Environment variables: `EVE_WALLETS_DB` is the database path (the `--db` flag wins); `EVE_WALLETS_CLIENT_ID` replaces the embedded EVE client id (see [Sign-in and port 8088](#sign-in-and-port-8088)); `EVE_WALLETS_UPDATE_API` overrides the GitHub API base URL used by `update` (for tests).
@@ -165,7 +166,7 @@ systemctl --user enable --now eve-wallets
 
 No `PATH` entry or environment file is needed. After an update, restart it with `systemctl --user restart eve-wallets`.
 
-On macOS you can run the same command from a launchd agent, and on Windows you can run `eve-wallets.exe serve` in a terminal (no service is provided). Neither was tested.
+On macOS you can run the same command from a launchd agent, and on Windows you can run `eve-wallets serve` in a terminal (no service is provided; the installer can add the folder to your user PATH, see [Installer script (Windows)](#installer-script-windows)). Neither was tested.
 
 ## Update
 
@@ -302,5 +303,5 @@ Not verified:
 - Loyalty points: the collection, the API and the page are covered by fakes, a temporary SQLite database and literal-string UI checks only; no real ESI call was made, the migration of the real database to v5 was not run, and the tab was not opened in a browser.
 - Loyalty history: the migration to v6, the append-on-change logic and the API are covered by temporary SQLite databases and in-process HTTP tests only; the real database was not migrated and no real ESI call was made.
 - The systemd unit above, and running on macOS or Windows at all (only linux/amd64 was built and run here; the other platforms were only cross-compiled). On a real Windows machine the installer ran and the binary starts, but `serve` first failed because the default database path needed `HOME`, which Windows does not set; that is fixed (see Default database), and the fix itself was only tested on Linux with a simulated OS. Nothing else about running on Windows is verified.
-- `install.ps1` was only run on Linux under PowerShell 7, through its fake-release test (`scripts/test-install-ps1.sh`, also run in CI). It was not run on a real Windows machine nor in Windows PowerShell 5.1, so real file-lock behavior and the real GitHub redirect are unverified.
+- `install.ps1` was only run on Linux under PowerShell 7, through its fake-release test (`scripts/test-install-ps1.sh`, also run in CI). It was not run on a real Windows machine nor in Windows PowerShell 5.1, so real file-lock behavior and the real GitHub redirect are unverified. Likewise the browser opening of `serve` (`--open`, and the Windows terminal default with `rundll32 url.dll,FileProtocolHandler`) was only tested on Linux with a fake opener and a simulated OS, never on a real Windows machine nor with a real browser. The PATH option was exercised only through a test hook (`EVE_WALLETS_TEST_PATH_FILE`) that replaces the registry-backed user PATH, so the real user-scope registry read/write (which keeps other entries unexpanded), the WM_SETTINGCHANGE broadcast, the `[y/N]` prompt in a real console, and a new terminal picking the change up are unverified.
 - The release workflow, `install.sh` and `eve-wallets update` against real GitHub releases: they were only tested against local fake releases.
