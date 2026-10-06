@@ -22,7 +22,7 @@ The dialog only lists journal rows 50 at a time, so the owner cannot see at a gl
 
 ## Tasks
 - [x] T1 store + endpoint: daily totals query, handler, route, tests (store with a temp SQLite DB, handler incl. 404, tz, filters, zero-fill, DST day).
-- [ ] T2 UI: chart in the movements dialog (updates on Apply, respects filters, accessible summary), CSS, structural UI test, README Movements section and not-verified bullet.
+- [x] T2 UI: chart in the movements dialog (updates on Apply, respects filters, accessible summary), CSS, structural UI test, README Movements section and not-verified bullet.
 
 ## Routing / test policy
 - Test-first when a runnable deterministic test exists; RED observed before GREEN.
@@ -31,3 +31,6 @@ The dialog only lists journal rows 50 at a time, so the owner cannot see at a gl
 
 ## Progress
 - Mapped: journal endpoint `internal/web/journal.go`, route `internal/web/web.go:89`, dialog `buildMovements` in `internal/web/static/app.js`, store `internal/store/journal.go`.
+
+- T1 done: commit d552187. RED: store/web tests failed (undefined JournalAmounts, 404 route) before code; GREEN: gofmt/build/vet/test/race/node --check clean.
+- T2 done (commit below in git log). Pure JS: literal-string UI test + node --check; RED not observed for JS; not run in a browser. dataviz validator not run (reused --good/--bad tokens).
