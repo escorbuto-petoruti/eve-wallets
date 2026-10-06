@@ -617,7 +617,7 @@ func TestAppHasMovementsDailyChart(t *testing.T) {
 }
 
 // Every panel with data has an Expand button that opens a dialog with the same
-// balance chart drawn large; the dialog follows the Movements dialog pattern.
+// balance chart drawn large and replaces the small charts while open; the dialog follows the Movements dialog pattern.
 func TestAppHasExpandedChart(t *testing.T) {
 	js := asset(t, "app.js")
 	for _, want := range []string{
@@ -647,13 +647,17 @@ func TestAppHasExpandedChart(t *testing.T) {
 		"iskFmt.format(item.parsed.y)",
 		"xTicks.maxTicksLimit = 4", // small chart keeps its 4-tick limit
 		"if (opts.points.length) {",
+		`document.body.classList.add("chart-expanded")`,        // the small charts give way while open
+		`document.body.classList.remove("chart-expanded")`,     // every way of closing goes through reset
+		"section.charts.forEach(function (c) { c.resize(); })", // charts rebuilt while hidden get sized on show
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("app.js lacks %q", want)
 		}
 	}
 	css := asset(t, "style.css")
-	for _, want := range []string{".expand-chart", "flex: 1 1 auto", ".movements-dialog.expand-dialog[open]", "position: static"} {
+	for _, want := range []string{".expand-chart", "flex: 1 1 auto", ".movements-dialog.expand-dialog[open]", "position: static",
+		"body.chart-expanded #sections", "body.chart-expanded #status-card", "min-height: 0", "height: 100dvh"} {
 		if !strings.Contains(css, want) {
 			t.Errorf("style.css lacks %q", want)
 		}

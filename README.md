@@ -207,7 +207,7 @@ Data collected after the migration is lost by restoring. Existing wallets are li
 
 ## The page
 
-The page shows a balance history chart with one line per selected wallet, an optional Total line, time ranges (24 h, 7 d, 30 d, All), a table of latest balances, and the result of the last collection. Every panel with data (each wallet and the Total) has an Expand button that opens the same chart large in a panel placed right below the time range controls, with full axes, a legend and tooltips; the ranges stay usable while it is open and refresh it (Escape or Close returns focus to the button). Each wallet panel (not the Total) has a Movements button that opens its journal (see [Movements](#movements)). `/api/status` also reports `journal_points`, the journal balances the last backfill saw (0 when it did not run); the page does not display it.
+The page shows a balance history chart with one line per selected wallet, an optional Total line, time ranges (24 h, 7 d, 30 d, All), a table of latest balances, and the result of the last collection. Every panel with data (each wallet and the Total) has an Expand button that opens the same chart large, with full axes, a legend and tooltips, in a panel right below the time range controls that replaces the small charts and the balances table while it is open and fills the rest of the window; the ranges stay usable and refresh it (Escape or Close returns focus to the button). Each wallet panel (not the Total) has a Movements button that opens its journal (see [Movements](#movements)). `/api/status` also reports `journal_points`, the journal balances the last backfill saw (0 when it did not run); the page does not display it.
 
 ### Quitting from the page
 
@@ -314,7 +314,7 @@ Not verified:
 - The page (sign-in screen, header, sign out, session expiry, collecting state) in a real browser; its JavaScript has only structural tests and a syntax check.
 - The migration of the real v2 database to v3 (it is covered by a test on a generated v2 file).
 - The movements view and journal persistence are covered by fakes, a temporary SQLite database and literal-string UI checks only; they have not been run in a browser or against the real ESI.
-- The expanded chart panel (placement under the time range section, sizing at narrow widths, refresh on a range change, Escape and focus handling) is covered by literal-string UI checks only; it has not been run in a browser.
+- The expanded chart panel (placement under the time range section, replacing the small charts, fitting the window at narrow widths, refresh on a range change, Escape and focus handling) is covered by literal-string UI checks only; it has not been run in a browser.
 - The daily chart in the Movements dialog (layout in the viewport, colors in light and dark themes, tooltips) has not been run in a browser; only the endpoint (including a DST day) and literal-string UI checks are tested. The gain/loss colors were not run through a color-blindness validator; the legend and tooltip carry the identity.
 - The `serve` cycle that backfills the journal every time (and `--no-backfill`) is covered by fakes only; it has not been run against the real ESI.
 - The division names path was run against the real ESI only with a character that is not a Director. The case where a Director receives the names (stored with source `esi`, and cleared for divisions that return to the default name) is covered by fakes only.

@@ -1080,7 +1080,9 @@
 
   // buildExpand is the one dialog of a section that shows a panel's balance
   // chart large. It is non-modal and sits right below the time range controls, so
-  // the ranges stay visible and clickable; Close or Escape returns focus to the
+  // the ranges stay visible and clickable. While it is open the body carries
+  // the chart-expanded class, which hides the small charts and lets the dialog
+  // fill the rest of the viewport (they are still rebuilt, only hidden); Close or Escape returns focus to the
   // Expand button, and the chart is destroyed on every way of closing. A
   // rebuild of the grid (a range change) keeps it open and refreshes it for the
   // same panel through begin/sync/finish.
@@ -1133,6 +1135,9 @@
       document.removeEventListener("keydown", onDocKey);
       if (chart) { chart.destroy(); chart = null; }
       box.hidden = true;
+      // The small charts were rebuilt while hidden: size them now they show.
+      document.body.classList.remove("chart-expanded");
+      section.charts.forEach(function (c) { c.resize(); });
       if (trigger) { trigger.focus(); }
       trigger = null;
     }
@@ -1149,6 +1154,7 @@
       trigger = btn;
       curKey = keyOf(opts);
       box.hidden = false;
+      document.body.classList.add("chart-expanded"); // the small charts give way to the dialog
       if (!box.open) { if (canShow) { box.show(); } else { box.setAttribute("open", ""); } }
       document.addEventListener("keydown", onDocKey);
       closeBtn.focus();

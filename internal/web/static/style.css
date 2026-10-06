@@ -167,6 +167,16 @@ a { color: var(--accent); }
 /* The expanded chart is non-modal and sits in the flow right under the time
    range section, so the ranges stay visible and usable. */
 .movements-dialog.expand-dialog[open] { position: static; margin: .5rem auto 1rem; width: 100%; max-width: 70rem; height: calc(100vh - 12rem); height: calc(100dvh - 12rem); min-height: 15rem; box-sizing: border-box; }
+/* While a chart is expanded it replaces the section content: the page becomes a
+   viewport-high flex column and the dialog takes the height left under the
+   header, tabs and time range, so nothing scrolls and no offset is guessed. */
+body.chart-expanded { display: flex; flex-direction: column; height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; }
+body.chart-expanded header, body.chart-expanded main { width: 100%; flex: none; }
+body.chart-expanded main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+body.chart-expanded #signed-in { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+body.chart-expanded #signed-in > :not(.expand-dialog) { flex: none; }
+body.chart-expanded #sections, body.chart-expanded #status-card { display: none; }
+body.chart-expanded .movements-dialog.expand-dialog[open] { flex: 1 1 auto; min-height: 0; height: auto; width: 100%; margin: .5rem auto 1rem; }
 .expand-chart { flex: 1 1 auto; min-height: 0; position: relative; margin-top: .5rem; }
 .movements-open { margin: .25rem 0; padding: .15rem .6rem; font-size: .8rem; }
 .movements-scroll { border: 1px solid var(--border); border-radius: 6px; }
