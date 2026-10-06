@@ -62,7 +62,11 @@
           throw e;
         }
         if (epoch !== session.epoch) { var s = new Error("stale"); s.unauthorized = true; throw s; }
-        if (!r.ok) { throw new Error(body && body.error ? body.error : "request failed (" + r.status + ")"); }
+        if (!r.ok) {
+          var he = new Error(body && body.error ? body.error : "request failed (" + r.status + ")");
+          he.status = r.status;
+          throw he;
+        }
         return body;
       });
     });
@@ -686,6 +690,21 @@
     status.setAttribute("aria-live", "polite");
     box.appendChild(status);
 
+    // Daily income and expenses of the filtered range, above the table. The
+    // box keeps a small fixed height so the table keeps the rest of the dialog.
+    var chartBox = el("div", undefined, "movements-chart");
+    var chartNote = el("p", "", "muted movements-chart-note");
+    chartNote.setAttribute("role", "status");
+    var canvas = document.createElement("canvas");
+    canvas.setAttribute("role", "img");
+    canvas.setAttribute("aria-label", "Daily income and expenses");
+    chartBox.appendChild(canvas);
+    chartBox.appendChild(chartNote);
+    box.appendChild(chartBox);
+    var dailyChart = null;
+    var tz = "UTC";
+    try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch (e) { tz = "UTC"; }
+
     // The table scrolls in the middle region of the dialog, between the fixed
     // top area and the pager; it is focusable so keyboard users can scroll it.
     var scroll = el("div", undefined, "scroll movements-scroll movements-body");
@@ -717,7 +736,7 @@
     // cur.stack holds the cursor used for each visited page (page 1 has none),
     // so its length is the current page number; cur.next is the cursor of the
     // page after the one shown.
-    var cur = { wallet: null, trigger: null, stack: [], next: null, busy: false, seq: 0, typesLoaded: false };
+    var cur = { wallet: null, trigger: null, stack: [], next: null, busy: false, seq: 0, dailySeq: 0, typesLoaded: false };
 
     function syncPager() {
       prev.disabled = cur.busy || cur.stack.length <= 1;
@@ -733,6 +752,93 @@
       if (t) { q.push("to=" + encodeURIComponent(t)); }
       if (cursor) { q.push("cursor=" + encodeURIComponent(cursor)); }
       return "/api/wallets/" + encodeURIComponent(String(cur.wallet.id)) + "/journal?" + q.join("&");
+    }
+
+    function dailyUrl(withTz) {
+      var q = withTz ? ["tz=" + encodeURIComponent(tz)] : [];
+      if (typeSel.value) { q.push("ref_type=" + encodeURIComponent(typeSel.value)); }
+      var f = dayBound(from.value, false);
+      var t = dayBound(to.value, true);
+      if (f) { q.push("from=" + encodeURIComponent(f)); }
+      if (t) { q.push("to=" + encodeURIComponent(t)); }
+      return "/api/wallets/" + encodeURIComponent(String(cur.wallet.id)) + "/journal/daily?" + q.join("&");
+    }
+
+    function destroyChart() {
+      if (dailyChart) { dailyChart.destroy(); dailyChart = null; }
+    }
+
+    // showDaily draws the grouped bars (income and expenses per day). Expenses
+    // are positive magnitudes from the server. Colors come from the theme
+    // tokens of the gain/loss amounts; the legend and the tooltip carry the
+    // identity, so color is never the only cue.
+    function showDaily(days) {
+      destroyChart();
+      var n = days.length;
+      canvas.hidden = n === 0;
+      if (n === 0) {
+        chartNote.textContent = "No daily totals for this range.";
+        canvas.setAttribute("aria-label", "Daily income and expenses: no data");
+        return;
+      }
+      var income = 0;
+      var expense = 0;
+      days.forEach(function (d) { income += d.income_cents; expense += d.expense_cents; });
+      chartNote.textContent = "";
+      canvas.setAttribute("aria-label", "Daily income and expenses over " + n + (n === 1 ? " day" : " days") +
+        ": total income " + formatISK(income) + " ISK, total expenses " + formatISK(expense) + " ISK");
+      var c = themeColors();
+      var cs = getComputedStyle(document.body);
+      var good = cs.getPropertyValue("--good").trim() || "#8ed7bc";
+      var bad = cs.getPropertyValue("--bad").trim() || "#ff8a8a";
+      dailyChart = new Chart(canvas, {
+        type: "bar",
+        data: {
+          labels: days.map(function (d) { return d.day; }),
+          datasets: [
+            { label: "Income", data: days.map(function (d) { return d.income_cents / 100; }), backgroundColor: good, borderRadius: 3 },
+            { label: "Expenses", data: days.map(function (d) { return d.expense_cents / 100; }), backgroundColor: bad, borderRadius: 3 }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          interaction: { mode: "index", intersect: false },
+          scales: {
+            x: { ticks: { color: c.text, maxRotation: 0, autoSkip: true }, grid: { display: false } },
+            y: { beginAtZero: true, ticks: { color: c.text, callback: function (v) { return iskFmt.format(v); } }, grid: { color: c.grid } }
+          },
+          plugins: {
+            legend: { labels: { color: c.text, boxWidth: 12, boxHeight: 12 } },
+            tooltip: { callbacks: { label: function (ctx) { return ctx.dataset.label + ": " + iskFmt.format(ctx.parsed.y) + " ISK"; } } }
+          }
+        }
+      });
+    }
+
+    // loadDaily refreshes the chart for the current filters; a newer request
+    // or closing the dialog makes an older answer stale.
+    function loadDaily() {
+      if (!cur.wallet) { return; }
+      var f = dayBound(from.value, false);
+      var t = dayBound(to.value, true);
+      if (f && t && t < f) { return; }
+      var seq = ++cur.dailySeq;
+      // A 400 while a tz was sent may mean the zone is unknown to the server;
+      // retry once without it (the server then groups in UTC). No loop.
+      getJSON(dailyUrl(true)).catch(function (err) {
+        if (err.unauthorized || seq !== cur.dailySeq || err.status !== 400 || !tz) { throw err; }
+        return getJSON(dailyUrl(false));
+      }).then(function (resp) {
+        if (seq !== cur.dailySeq) { return; }
+        showDaily(resp.days || []);
+      }).catch(function (err) {
+        if (err.unauthorized || seq !== cur.dailySeq) { return; }
+        destroyChart();
+        canvas.hidden = true;
+        chartNote.textContent = "Could not load the daily chart: " + err.message;
+      });
     }
 
     function showRows(entries) {
@@ -803,6 +909,8 @@
     // reset drops the loaded state; it runs on every way of closing.
     function reset() {
       cur.seq++;
+      cur.dailySeq++;
+      destroyChart();
       cur.wallet = null;
       cur.busy = false;
       box.hidden = true;
@@ -821,6 +929,9 @@
       pageNo.textContent = "";
       syncPager();
       tbody.replaceChildren();
+      destroyChart();
+      canvas.hidden = true;
+      chartNote.textContent = "";
       typeSel.replaceChildren();
       from.value = "";
       to.value = "";
@@ -829,6 +940,7 @@
       if (modal) { if (!box.open) { box.showModal(); } }
       closeBtn.focus();
       load([""]);
+      loadDaily();
     }
     closeBtn.addEventListener("click", close);
     next.addEventListener("click", function () {
@@ -839,11 +951,11 @@
       if (cur.busy || cur.stack.length <= 1) { return; }
       load(cur.stack.slice(0, -1), prev);
     });
-    form.addEventListener("submit", function (ev) { ev.preventDefault(); load([""]); });
+    form.addEventListener("submit", function (ev) { ev.preventDefault(); load([""]); loadDaily(); });
     // Escape fires "cancel" and then "close" on a modal dialog; "close" also
     // follows box.close(), so it is the single place that resets the state.
     box.addEventListener("close", reset);
-    box.addEventListener("cancel", function () { cur.seq++; });
+    box.addEventListener("cancel", function () { cur.seq++; cur.dailySeq++; });
     box.addEventListener("keydown", function (ev) {
       if (ev.key === "Escape" && !modal) { ev.preventDefault(); close(); }
     });

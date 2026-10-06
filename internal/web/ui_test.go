@@ -580,3 +580,38 @@ func TestTabBarComesBeforeRangeCard(t *testing.T) {
 		t.Error("style.css must attach #controls to the tab bar")
 	}
 }
+
+// The movements dialog shows a daily income/expenses bar chart fed by the
+// daily endpoint with the dialog filters and the browser time zone.
+func TestAppHasMovementsDailyChart(t *testing.T) {
+	js := asset(t, "app.js")
+	for _, want := range []string{
+		`/journal/daily?`,
+		"Intl.DateTimeFormat().resolvedOptions().timeZone",
+		`"tz=" +`,
+		"loadDaily()",
+		"cur.dailySeq",    // stale answers are ignored
+		"dailyUrl(false)", // retry without tz when the zone is rejected
+		"err.status !== 400",
+		"destroyChart()",
+		`type: "bar"`,
+		`"Income"`, `"Expenses"`,
+		`"role", "img"`,
+		`"Daily income and expenses`,
+		`"No daily totals for this range."`,
+		`getPropertyValue("--good")`,
+		`getPropertyValue("--bad")`,
+		"iskFmt.format(ctx.parsed.y)",
+		"income_cents", "expense_cents",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("app.js lacks %q", want)
+		}
+	}
+	css := asset(t, "style.css")
+	for _, want := range []string{".movements-chart", "height: 160px"} {
+		if !strings.Contains(css, want) {
+			t.Errorf("style.css lacks %q", want)
+		}
+	}
+}

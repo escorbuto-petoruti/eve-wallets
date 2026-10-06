@@ -116,6 +116,50 @@ func (s *Store) Journal(ctx context.Context, f JournalFilter) ([]JournalEntry, e
 	return out, rows.Err()
 }
 
+// JournalAmount is the date and signed amount of one journal row.
+type JournalAmount struct {
+	Date        time.Time
+	AmountCents int64
+}
+
+// JournalAmounts returns the date and amount of every row of f's wallet that
+// matches its RefType, From and To (inclusive), oldest first. Limit and After
+// are ignored: the caller aggregates the whole range.
+func (s *Store) JournalAmounts(ctx context.Context, f JournalFilter) ([]JournalAmount, error) {
+	where := []string{"wallet_id = ?"}
+	args := []any{f.WalletID}
+	if f.RefType != "" {
+		where = append(where, "ref_type = ?")
+		args = append(args, f.RefType)
+	}
+	if !f.From.IsZero() {
+		where = append(where, "date >= ?")
+		args = append(args, f.From.Unix())
+	}
+	if !f.To.IsZero() {
+		where = append(where, "date <= ?")
+		args = append(args, f.To.Unix())
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT date, amount_cents FROM journal WHERE `+strings.Join(where, " AND ")+`
+		ORDER BY date, entry_id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: list journal amounts: %w", err)
+	}
+	defer rows.Close()
+	var out []JournalAmount
+	for rows.Next() {
+		var a JournalAmount
+		var at int64
+		if err := rows.Scan(&at, &a.AmountCents); err != nil {
+			return nil, fmt.Errorf("store: scan journal amount: %w", err)
+		}
+		a.Date = time.Unix(at, 0).UTC()
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 // JournalRefTypes returns the distinct reference types stored for a wallet,
 // sorted alphabetically.
 func (s *Store) JournalRefTypes(ctx context.Context, walletID int64) ([]string, error) {
