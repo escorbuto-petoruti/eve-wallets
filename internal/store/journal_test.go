@@ -145,3 +145,43 @@ func TestJournalCascadesWithWallet(t *testing.T) {
 		t.Fatalf("journal rows after delete = %d, %v", n, err)
 	}
 }
+
+func TestJournalAmountsFiltersAndIgnoresPaging(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	id := mustWallet(t, s, Wallet{Kind: KindCharacter, OwnerID: 1, OwnerName: "A"})
+	other := mustWallet(t, s, Wallet{Kind: KindCharacter, OwnerID: 2, OwnerName: "B"})
+	if _, err := s.AddJournalEntries(ctx, id, []JournalEntry{
+		jentry(1, 10, 1, "bounty"), jentry(2, 20, -2, "fee"), jentry(3, 20, 3, "bounty"), jentry(4, 30, -4, "tax"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddJournalEntries(ctx, other, []JournalEntry{jentry(9, 25, 9, "secret")}); err != nil {
+		t.Fatal(err)
+	}
+	sum := func(f JournalFilter) (int, int64) {
+		f.WalletID = id
+		got, err := s.JournalAmounts(ctx, f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var total int64
+		for _, a := range got {
+			total += a.AmountCents
+		}
+		return len(got), total
+	}
+	if n, total := sum(JournalFilter{Limit: 1}); n != 4 || total != -2 {
+		t.Fatalf("all (Limit must be ignored) = %d rows, sum %d", n, total)
+	}
+	if n, total := sum(JournalFilter{RefType: "bounty"}); n != 2 || total != 4 {
+		t.Fatalf("by type = %d rows, sum %d", n, total)
+	}
+	if n, total := sum(JournalFilter{From: ts(20), To: ts(20)}); n != 2 || total != 1 {
+		t.Fatalf("inclusive range = %d rows, sum %d", n, total)
+	}
+	got, _ := s.JournalAmounts(ctx, JournalFilter{WalletID: id})
+	if len(got) != 4 || !got[0].Date.Equal(ts(10)) || got[0].AmountCents != 1 {
+		t.Fatalf("rows must be oldest first with date and amount: %+v", got)
+	}
+}

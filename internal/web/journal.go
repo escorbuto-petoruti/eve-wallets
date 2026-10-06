@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	_ "time/tzdata" // zone names must resolve on hosts without a zoneinfo database (Windows)
 
 	"github.com/escorbuto-petoruti/eve-wallets/internal/store"
 )
@@ -15,6 +16,9 @@ const (
 	defaultJournalLimit = 50
 	maxJournalLimit     = 200
 	maxRefTypeLen       = 64
+	// defaultDailyDays is the chart window when neither from nor to is given.
+	defaultDailyDays = 30
+	maxTZLen         = 64
 )
 
 type journalEntryJSON struct {
@@ -85,6 +89,105 @@ func (s *server) walletJournal(w http.ResponseWriter, r *http.Request, u store.U
 		types = []string{}
 	}
 	writeJSON(w, r, http.StatusOK, map[string]any{"entries": entries, "next_cursor": next, "ref_types": types})
+}
+
+type dailyTotalJSON struct {
+	Day          string `json:"day"`
+	IncomeCents  int64  `json:"income_cents"`
+	ExpenseCents int64  `json:"expense_cents"`
+}
+
+// walletJournalDaily answers the income and expenses per local day of a wallet
+// the user can see, for the ref_type, from and to filters of the journal and a
+// tz IANA zone name (UTC when absent). Without from and to the window is the
+// last 30 days. Days run ascending and are zero-filled between the first and
+// the last one; expenses are positive magnitudes.
+func (s *server) walletJournalDaily(w http.ResponseWriter, r *http.Request, u store.User) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusNotFound, "wallet not found")
+		return
+	}
+	wallets, err := s.deps.Store.WalletsForUser(r.Context(), u.UserID)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	visible := false
+	for _, wl := range wallets {
+		if wl.ID == id {
+			visible = true
+			break
+		}
+	}
+	if !visible {
+		writeError(w, http.StatusNotFound, "wallet not found")
+		return
+	}
+
+	f, err := parseJournalQuery(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	loc := time.UTC
+	if name := r.URL.Query().Get("tz"); name != "" {
+		if len(name) > maxTZLen {
+			writeError(w, http.StatusBadRequest, "tz is too long")
+			return
+		}
+		if loc, err = time.LoadLocation(name); err != nil {
+			writeError(w, http.StatusBadRequest, "tz must be an IANA time zone name")
+			return
+		}
+	}
+	f.WalletID = id
+	if f.From.IsZero() && f.To.IsZero() {
+		f.From = s.now().AddDate(0, 0, -defaultDailyDays)
+	}
+	rows, err := s.deps.Store.JournalAmounts(r.Context(), f)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, map[string]any{"days": dailyTotals(rows, loc)})
+}
+
+// dailyTotals sums rows (oldest first) per calendar day of loc, filling the
+// days without rows between the first and the last one with zeros.
+func dailyTotals(rows []store.JournalAmount, loc *time.Location) []dailyTotalJSON {
+	out := []dailyTotalJSON{}
+	if len(rows) == 0 {
+		return out
+	}
+	const layout = "2006-01-02"
+	byDay := map[string]*dailyTotalJSON{}
+	for _, a := range rows {
+		day := a.Date.In(loc).Format(layout)
+		t := byDay[day]
+		if t == nil {
+			t = &dailyTotalJSON{Day: day}
+			byDay[day] = t
+		}
+		if a.AmountCents >= 0 {
+			t.IncomeCents += a.AmountCents
+		} else {
+			t.ExpenseCents -= a.AmountCents
+		}
+	}
+	// Walk calendar dates as UTC midnights so a 23 or 25 hour local day
+	// still advances by exactly one date.
+	first, _ := time.Parse(layout, rows[0].Date.In(loc).Format(layout))
+	last, _ := time.Parse(layout, rows[len(rows)-1].Date.In(loc).Format(layout))
+	for d := first; !d.After(last); d = d.AddDate(0, 0, 1) {
+		day := d.Format(layout)
+		if t := byDay[day]; t != nil {
+			out = append(out, *t)
+		} else {
+			out = append(out, dailyTotalJSON{Day: day})
+		}
+	}
+	return out
 }
 
 // parseJournalQuery reads limit, cursor, ref_type, from and to. Limit holds
