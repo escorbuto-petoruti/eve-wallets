@@ -638,7 +638,9 @@ func TestAppHasExpandedChart(t *testing.T) {
 		"box.show()",                                           // non-modal: no backdrop, the time ranges stay usable
 		`ev.key !== "Escape"`,                                  // Escape closes it through a document handler
 		`insertAdjacentElement("afterend", section.expandBox)`, // docked under the time range section
-		"section.expand.sync(opts, expandBtn)",                 // a range change refreshes the open dialog
+		"section.movements.open(curWallet, movesBtn)",          // wallets only: the Total has no movements
+		"movesBtn.hidden = !curWallet",
+		"section.expand.sync(opts, expandBtn)", // a range change refreshes the open dialog
 		"section.expand.finish()",
 		"destroyCharts(section, true)",
 		`"expand-chart"`,
@@ -659,7 +661,7 @@ func TestAppHasExpandedChart(t *testing.T) {
 	}
 	css := asset(t, "style.css")
 	for _, want := range []string{".expand-chart", "flex: 1 1 auto", ".movements-dialog.expand-dialog[open]", "position: static",
-		"body.chart-expanded #sections", "body.chart-expanded #status-card", "min-height: 0", "height: 100dvh"} {
+		"body.chart-expanded #sections .card > :not(.movements-dialog)", "body.chart-expanded #status-card", "min-height: 0", "height: 100dvh"} {
 		if !strings.Contains(css, want) {
 			t.Errorf("style.css lacks %q", want)
 		}

@@ -175,7 +175,10 @@ body.chart-expanded header, body.chart-expanded main { width: 100%; flex: none; 
 body.chart-expanded main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 body.chart-expanded #signed-in { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 body.chart-expanded #signed-in > :not(.expand-dialog) { flex: none; }
-body.chart-expanded #sections, body.chart-expanded #status-card { display: none; }
+body.chart-expanded #status-card { display: none; }
+/* #sections itself stays displayed: the modal movements dialog lives in its card, and a dialog inside a display:none ancestor cannot be shown. */
+body.chart-expanded #sections .card { margin: 0; padding: 0; border: 0; background: none; box-shadow: none; }
+body.chart-expanded #sections .card > :not(.movements-dialog) { display: none; }
 body.chart-expanded .movements-dialog.expand-dialog[open] { flex: 1 1 auto; min-height: 0; height: auto; width: 100%; margin: .5rem auto 1rem; }
 .expand-chart { flex: 1 1 auto; min-height: 0; position: relative; margin-top: .5rem; }
 .movements-open { margin: .25rem 0; padding: .15rem .6rem; font-size: .8rem; }

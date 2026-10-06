@@ -1082,7 +1082,9 @@
   // chart large. It is non-modal and sits right below the time range controls, so
   // the ranges stay visible and clickable. While it is open the body carries
   // the chart-expanded class, which hides the small charts and lets the dialog
-  // fill the rest of the viewport (they are still rebuilt, only hidden); Close or Escape returns focus to the
+  // fill the rest of the viewport (they are still rebuilt, only hidden). The
+  // Movements button of a wallet opens the modal movements dialog on top of it;
+  // Close or Escape returns focus to the
   // Expand button, and the chart is destroyed on every way of closing. A
   // rebuild of the grid (a range change) keeps it open and refreshes it for the
   // same panel through begin/sync/finish.
@@ -1097,8 +1099,15 @@
     title.tabIndex = -1;
     var closeBtn = el("button", "Close", "movements-close");
     closeBtn.type = "button";
+    // Wallet panels only: the Total has no movements. The modal movements dialog
+    // opens on top of this one (its section card is the only part of #sections
+    // left displayed while expanded) and returns focus to this button.
+    var movesBtn = el("button", "Movements", "movements-open");
+    movesBtn.type = "button";
+    movesBtn.hidden = true;
     var head = el("div", undefined, "row movements-head");
     head.appendChild(title);
+    head.appendChild(movesBtn);
     head.appendChild(closeBtn);
     box.appendChild(head);
     var balanceLine = el("p", "", "big num");
@@ -1116,6 +1125,7 @@
     var opened = false;
     var curKey = null;
     var synced = false;
+    var curWallet = null;
     function keyOf(opts) { return opts.wallet ? "w" + opts.wallet.id : "total"; }
     function onDocKey(ev) {
       if (ev.key !== "Escape" || ev.defaultPrevented) { return; }
@@ -1126,6 +1136,9 @@
     function render(opts) {
       var label = opts.wallet ? walletLabel(opts.wallet) : opts.label;
       title.textContent = "Balance history: " + label;
+      curWallet = opts.wallet || null;
+      movesBtn.hidden = !curWallet;
+      movesBtn.setAttribute("aria-label", "Movements for " + label);
       // Same balance and delta lines as the small panel.
       var last = opts.points.length ? opts.points[opts.points.length - 1].cents : opts.cents;
       var hasBalance = last !== null && last !== undefined;
@@ -1143,6 +1156,7 @@
       if (!opened) { return; }
       opened = false;
       curKey = null;
+      curWallet = null;
       document.removeEventListener("keydown", onDocKey);
       if (chart) { chart.destroy(); chart = null; }
       box.hidden = true;
@@ -1189,6 +1203,7 @@
       if (on) { on.focus(); }
     }
     closeBtn.addEventListener("click", close);
+    movesBtn.addEventListener("click", function () { if (curWallet) { section.movements.open(curWallet, movesBtn); } });
     box.addEventListener("close", reset);
     section.expandBox = box;
     return { open: open, close: close, begin: begin, sync: sync, finish: finish };
