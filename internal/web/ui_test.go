@@ -311,8 +311,8 @@ func TestAppBuildsSmallMultiplePanels(t *testing.T) {
 	for _, want := range []string{
 		"buildPanel", "drawPanels", "drawSpark",
 		`stepped: "before"`,
-		"legend: { display: false }",
-		`"big num"`, `"delta "`, // current balance and delta
+		"legend: { display: !!big", // the small chart passes big=false: no legend
+		`"big num"`, `"delta "`,    // current balance and delta
 		`"Up"`, `"Down"`, `"Flat"`, // text label, not color alone
 		"Showing the first ", // omitted wallets are announced
 		`q.set("total", "1")`,
@@ -610,6 +610,46 @@ func TestAppHasMovementsDailyChart(t *testing.T) {
 	}
 	css := asset(t, "style.css")
 	for _, want := range []string{".movements-chart", "height: 160px"} {
+		if !strings.Contains(css, want) {
+			t.Errorf("style.css lacks %q", want)
+		}
+	}
+}
+
+// Every panel with data has an Expand button that opens a dialog with the same
+// balance chart drawn large; the dialog follows the Movements dialog pattern.
+func TestAppHasExpandedChart(t *testing.T) {
+	js := asset(t, "app.js")
+	for _, want := range []string{
+		"buildExpand",
+		"lineConfig(opts, false)", // the small chart shares the config
+		"lineConfig({ label: label",
+		`"Expand"`,
+		`"movements-open expand-open"`,
+		"section.expand.open(opts, expandBtn)",
+		`"movements-dialog expand-dialog"`,
+		`"expand-title-"`,
+		`box.setAttribute("aria-labelledby", title.id)`,
+		`"Balance history: "`,
+		"chart.destroy()",
+		"trigger.focus()",
+		"section.expand.close()", // a grid rebuild closes the dialog and its chart
+		"s.expand.close()",       // one expanded dialog at a time
+		"box.showModal()",
+		`ev.key === "Escape" && !modal`,
+		`"expand-chart"`,
+		"legend: { display: !!big",
+		`text: "ISK"`,
+		"iskFmt.format(item.parsed.y)",
+		"xTicks.maxTicksLimit = 4", // small chart keeps its 4-tick limit
+		"if (opts.points.length) {",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("app.js lacks %q", want)
+		}
+	}
+	css := asset(t, "style.css")
+	for _, want := range []string{".expand-chart", "flex: 1 1 auto"} {
 		if !strings.Contains(css, want) {
 			t.Errorf("style.css lacks %q", want)
 		}

@@ -164,6 +164,7 @@ a { color: var(--accent); }
 .movements-chart canvas { max-height: 100%; }
 .movements-chart-note { margin: 0; }
 .movements-status { min-height: 1.4em; }
+.expand-chart { flex: 1 1 auto; min-height: 0; position: relative; margin-top: .5rem; }
 .movements-open { margin: .25rem 0; padding: .15rem .6rem; font-size: .8rem; }
 .movements-scroll { border: 1px solid var(--border); border-radius: 6px; }
 .movements-body { flex: 1 1 auto; min-height: 0; overflow: auto; }
