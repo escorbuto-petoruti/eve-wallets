@@ -185,3 +185,92 @@ func TestJournalAmountsFiltersAndIgnoresPaging(t *testing.T) {
 		t.Fatalf("rows must be oldest first with date and amount: %+v", got)
 	}
 }
+
+func TestJournalAcrossWalletsPagesWithCollidingEntryIDs(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	a := mustWallet(t, s, Wallet{Kind: KindCharacter, OwnerID: 1, OwnerName: "A"})
+	b := mustWallet(t, s, Wallet{Kind: KindCharacter, OwnerID: 2, OwnerName: "B"})
+	c := mustWallet(t, s, Wallet{Kind: KindCharacter, OwnerID: 3, OwnerName: "C"})
+	// Entry ids collide across wallets on purpose, some at the same instant.
+	if _, err := s.AddJournalEntries(ctx, a, []JournalEntry{jentry(1, 10, 1, "bounty"), jentry(2, 20, 2, "fee")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddJournalEntries(ctx, b, []JournalEntry{jentry(1, 10, 3, "tax"), jentry(2, 20, 4, "fee")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddJournalEntries(ctx, c, []JournalEntry{jentry(2, 20, 99, "secret")}); err != nil {
+		t.Fatal(err)
+	}
+	type key struct{ wallet, id int64 }
+	keys := func(es []JournalEntry) []key {
+		var out []key
+		for _, e := range es {
+			out = append(out, key{e.WalletID, e.ID})
+		}
+		return out
+	}
+	ids := []int64{a, b}
+	all, err := s.Journal(ctx, JournalFilter{WalletIDs: ids, Limit: 10})
+	want := []key{{b, 2}, {a, 2}, {b, 1}, {a, 1}}
+	if err != nil || !reflect.DeepEqual(keys(all), want) {
+		t.Fatalf("all = %v, %v, want %v", keys(all), err, want)
+	}
+	var got []key
+	var after *JournalCursor
+	for range 4 {
+		page, err := s.Journal(ctx, JournalFilter{WalletIDs: ids, Limit: 1, After: after})
+		if err != nil || len(page) != 1 {
+			t.Fatalf("page = %v, %v", page, err)
+		}
+		got = append(got, keys(page)...)
+		after = &JournalCursor{Date: page[0].Date, ID: page[0].ID, WalletID: page[0].WalletID}
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("paged = %v, want %v", got, want)
+	}
+	if rest, _ := s.Journal(ctx, JournalFilter{WalletIDs: ids, Limit: 10, After: after}); len(rest) != 0 {
+		t.Fatalf("after the last row = %v", rest)
+	}
+	byType, _ := s.Journal(ctx, JournalFilter{WalletIDs: ids, Limit: 10, RefType: "fee"})
+	if !reflect.DeepEqual(keys(byType), []key{{b, 2}, {a, 2}}) {
+		t.Fatalf("by type = %v", keys(byType))
+	}
+	ranged, _ := s.Journal(ctx, JournalFilter{WalletIDs: ids, Limit: 10, From: ts(10), To: ts(10)})
+	if !reflect.DeepEqual(keys(ranged), []key{{b, 1}, {a, 1}}) {
+		t.Fatalf("range = %v", keys(ranged))
+	}
+	// A single wallet keeps carrying its id.
+	one, _ := s.Journal(ctx, JournalFilter{WalletID: a, Limit: 1})
+	if len(one) != 1 || one[0].WalletID != a {
+		t.Fatalf("single wallet entry = %+v", one)
+	}
+}
+
+func TestJournalAmountsAndRefTypesAcrossWallets(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	a := mustWallet(t, s, Wallet{Kind: KindCharacter, OwnerID: 1, OwnerName: "A"})
+	b := mustWallet(t, s, Wallet{Kind: KindCharacter, OwnerID: 2, OwnerName: "B"})
+	c := mustWallet(t, s, Wallet{Kind: KindCharacter, OwnerID: 3, OwnerName: "C"})
+	for w, es := range map[int64][]JournalEntry{
+		a: {jentry(1, 10, 1, "bounty"), jentry(2, 30, -2, "fee")},
+		b: {jentry(1, 20, 5, "tax")},
+		c: {jentry(1, 20, 100, "secret")},
+	} {
+		if _, err := s.AddJournalEntries(ctx, w, es); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.JournalAmounts(ctx, JournalFilter{WalletIDs: []int64{a, b}})
+	if err != nil || len(got) != 3 {
+		t.Fatalf("amounts = %v, %v", got, err)
+	}
+	if got[0].AmountCents != 1 || got[1].AmountCents != 5 || got[2].AmountCents != -2 {
+		t.Fatalf("amounts must be oldest first across wallets: %+v", got)
+	}
+	types, err := s.JournalRefTypesFor(ctx, []int64{a, b})
+	if err != nil || !reflect.DeepEqual(types, []string{"bounty", "fee", "tax"}) {
+		t.Fatalf("types union = %v, %v", types, err)
+	}
+}

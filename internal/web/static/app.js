@@ -648,10 +648,19 @@
     return isNaN(d.getTime()) ? "" : d.toISOString();
   }
 
+  // totalTarget is what the Movements button of the Total opens: the wallets
+  // the Total line sums (the section group's, capped like the balance chart).
+  function totalTarget(section) {
+    var all = section.group.wallets;
+    return { total: true, wallets: all.slice(0, MAX_IDS), count: all.length };
+  }
+
   // buildMovements returns the controller of a section's movements view: a
-  // table of the stored journal of one wallet with type and date filters and
+  // table of the stored journal of one wallet (or, for the Total, of all the
+  // wallets it sums, with a Wallet column) with type and date filters and
   // Previous/Next paging over the keyset cursor, shown in a modal dialog that
-  // fits the viewport. Server text only goes through textContent.
+  // fits the viewport. Server text only goes through textContent. Entries are
+  // shown as stored: transfers between the owner's own wallets are not netted.
   function buildMovements(section) {
     var box = document.createElement("dialog");
     box.className = "movements movements-dialog";
@@ -696,6 +705,8 @@
     status.setAttribute("role", "status");
     status.setAttribute("aria-live", "polite");
     box.appendChild(status);
+    var capNote = el("p", "", "muted movements-cap-note");
+    box.appendChild(capNote);
 
     // Daily income and expenses of the filtered range, above the table. The
     // box keeps a small fixed height so the table keeps the rest of the dialog.
@@ -719,10 +730,16 @@
     scroll.setAttribute("aria-label", "Movements table");
     var table = document.createElement("table");
     table.className = "movements-table";
-    var tr = document.createElement("tr");
-    [["Date"], ["Type"], ["Amount (ISK)", "num"], ["Description"]].forEach(function (c) { tr.appendChild(el("th", c[0], c[1])); });
     var thead = document.createElement("thead");
-    thead.appendChild(tr);
+    // The Wallet column exists in Total mode only.
+    function setHead(total) {
+      var tr = document.createElement("tr");
+      var cols = total ? [["Date"], ["Wallet"], ["Type"], ["Amount (ISK)", "num"], ["Description"]] : [["Date"], ["Type"], ["Amount (ISK)", "num"], ["Description"]];
+      cols.forEach(function (c) { tr.appendChild(el("th", c[0], c[1])); });
+      thead.replaceChildren(tr);
+      table.classList.toggle("movements-total", total);
+    }
+    setHead(false);
     table.appendChild(thead);
     var tbody = document.createElement("tbody");
     table.appendChild(tbody);
@@ -743,11 +760,22 @@
     // cur.stack holds the cursor used for each visited page (page 1 has none),
     // so its length is the current page number; cur.next is the cursor of the
     // page after the one shown.
-    var cur = { wallet: null, trigger: null, stack: [], next: null, busy: false, seq: 0, dailySeq: 0, typesLoaded: false };
+    // cur.wallet is the open target: a wallet, or the Total (see totalTarget).
+    var cur = { wallet: null, labels: null, trigger: null, stack: [], next: null, busy: false, seq: 0, dailySeq: 0, typesLoaded: false };
 
     function syncPager() {
       prev.disabled = cur.busy || cur.stack.length <= 1;
       next.disabled = cur.busy || !cur.next;
+    }
+
+    // endpoint is the journal URL of the open target, with its first params.
+    function endpoint(suffix, q) {
+      if (cur.wallet.total) {
+        var ids = cur.wallet.wallets.map(function (w) { return w.id; });
+        q.unshift("wallet_ids=" + encodeURIComponent(ids.join(",")));
+        return "/api/journal" + suffix + "?" + q.join("&");
+      }
+      return "/api/wallets/" + encodeURIComponent(String(cur.wallet.id)) + "/journal" + suffix + "?" + q.join("&");
     }
 
     function url(cursor) {
@@ -758,7 +786,7 @@
       if (f) { q.push("from=" + encodeURIComponent(f)); }
       if (t) { q.push("to=" + encodeURIComponent(t)); }
       if (cursor) { q.push("cursor=" + encodeURIComponent(cursor)); }
-      return "/api/wallets/" + encodeURIComponent(String(cur.wallet.id)) + "/journal?" + q.join("&");
+      return endpoint("", q);
     }
 
     function dailyUrl(withTz) {
@@ -768,7 +796,7 @@
       var t = dayBound(to.value, true);
       if (f) { q.push("from=" + encodeURIComponent(f)); }
       if (t) { q.push("to=" + encodeURIComponent(t)); }
-      return "/api/wallets/" + encodeURIComponent(String(cur.wallet.id)) + "/journal/daily?" + q.join("&");
+      return endpoint("/daily", q);
     }
 
     function destroyChart() {
@@ -853,6 +881,12 @@
       entries.forEach(function (e) {
         var row = document.createElement("tr");
         row.appendChild(el("td", formatTime(e.date), "movements-date"));
+        if (cur.wallet.total) {
+          var name = cur.labels.get(e.wallet_id) || ("Wallet " + e.wallet_id);
+          var walletCell = el("td", name, "movements-wallet");
+          walletCell.setAttribute("title", name);
+          row.appendChild(walletCell);
+        }
         var typeCell = el("td", e.ref_type, "movements-type");
         typeCell.setAttribute("title", e.ref_type);
         row.appendChild(typeCell);
@@ -928,6 +962,10 @@
     }
     function openMovements(w, trigger) {
       cur.wallet = w;
+      cur.labels = new Map();
+      if (w.total) { w.wallets.forEach(function (x) { cur.labels.set(x.id, walletLabel(x)); }); }
+      setHead(!!w.total);
+      capNote.textContent = w.total && w.count > w.wallets.length ? "Showing the movements of the first " + w.wallets.length + " of " + w.count + " wallets." : "";
       cur.trigger = trigger;
       cur.typesLoaded = false;
       cur.stack = [];
@@ -942,7 +980,7 @@
       typeSel.replaceChildren();
       from.value = "";
       to.value = "";
-      title.textContent = "Movements: " + walletLabel(w);
+      title.textContent = "Movements: " + (w.total ? "Total" : walletLabel(w));
       box.hidden = false;
       if (modal) { if (!box.open) { box.showModal(); } }
       closeBtn.focus();
@@ -1005,6 +1043,11 @@
       moves.type = "button";
       moves.addEventListener("click", function () { section.movements.open(w, moves); });
       panel.insertBefore(moves, box);
+    } else if (opts.total) {
+      var totalMoves = el("button", "Movements", "movements-open");
+      totalMoves.type = "button";
+      totalMoves.addEventListener("click", function () { section.movements.open(totalTarget(section), totalMoves); });
+      panel.insertBefore(totalMoves, box);
     }
     var expandBtn = null;
     if (opts.points.length) {
@@ -1083,7 +1126,7 @@
   // the ranges stay visible and clickable. While it is open the body carries
   // the chart-expanded class, which hides the small charts and lets the dialog
   // fill the rest of the viewport (they are still rebuilt, only hidden). The
-  // Movements button of a wallet opens the modal movements dialog on top of it;
+  // Movements button of a wallet or the Total opens the modal movements dialog on top of it;
   // Close or Escape returns focus to the
   // Expand button, and the chart is destroyed on every way of closing. A
   // rebuild of the grid (a range change) keeps it open and refreshes it for the
@@ -1099,8 +1142,7 @@
     title.tabIndex = -1;
     var closeBtn = el("button", "Close", "movements-close");
     closeBtn.type = "button";
-    // Wallet panels only: the Total has no movements. The modal movements dialog
-    // opens on top of this one (its section card is the only part of #sections
+    // Wallets and the Total. The modal movements dialog opens on top of this one (its section card is the only part of #sections
     // left displayed while expanded) and returns focus to this button.
     var movesBtn = el("button", "Movements", "movements-open");
     movesBtn.type = "button";
@@ -1125,7 +1167,7 @@
     var opened = false;
     var curKey = null;
     var synced = false;
-    var curWallet = null;
+    var curTarget = null;
     function keyOf(opts) { return opts.wallet ? "w" + opts.wallet.id : "total"; }
     function onDocKey(ev) {
       if (ev.key !== "Escape" || ev.defaultPrevented) { return; }
@@ -1136,8 +1178,8 @@
     function render(opts) {
       var label = opts.wallet ? walletLabel(opts.wallet) : opts.label;
       title.textContent = "Balance history: " + label;
-      curWallet = opts.wallet || null;
-      movesBtn.hidden = !curWallet;
+      curTarget = opts.wallet || (opts.total ? totalTarget(section) : null);
+      movesBtn.hidden = !curTarget;
       movesBtn.setAttribute("aria-label", "Movements for " + label);
       // Same balance and delta lines as the small panel.
       var last = opts.points.length ? opts.points[opts.points.length - 1].cents : opts.cents;
@@ -1156,7 +1198,7 @@
       if (!opened) { return; }
       opened = false;
       curKey = null;
-      curWallet = null;
+      curTarget = null;
       document.removeEventListener("keydown", onDocKey);
       if (chart) { chart.destroy(); chart = null; }
       box.hidden = true;
@@ -1203,7 +1245,7 @@
       if (on) { on.focus(); }
     }
     closeBtn.addEventListener("click", close);
-    movesBtn.addEventListener("click", function () { if (curWallet) { section.movements.open(curWallet, movesBtn); } });
+    movesBtn.addEventListener("click", function () { if (curTarget) { section.movements.open(curTarget, movesBtn); } });
     box.addEventListener("close", reset);
     section.expandBox = box;
     return { open: open, close: close, begin: begin, sync: sync, finish: finish };
@@ -1226,7 +1268,7 @@
       });
     });
     if (resp.total) {
-      buildPanel(section, { label: "Total", cls: "total", color: totalColor(), dashed: true, image: null, points: resp.total, cents: null });
+      buildPanel(section, { label: "Total", cls: "total", color: totalColor(), dashed: true, total: true, image: null, points: resp.total, cents: null });
     }
     section.expand.finish();
     section.drawn = true;

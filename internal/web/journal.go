@@ -22,6 +22,8 @@ const (
 )
 
 type journalEntryJSON struct {
+	// WalletID is set on the entries of the multi-wallet journal only.
+	WalletID    int64  `json:"wallet_id,omitempty"`
 	ID          int64  `json:"id"`
 	Date        int64  `json:"date"` // unix seconds
 	Cents       int64  `json:"cents"`
@@ -34,34 +36,36 @@ type journalEntryJSON struct {
 // entry of the previous page, so entries arriving later never shift a page.
 // An unknown wallet and one of another user both answer 404.
 func (s *server) walletJournal(w http.ResponseWriter, r *http.Request, u store.User) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || id <= 0 {
-		writeError(w, http.StatusNotFound, "wallet not found")
+	id, ok := s.pathWallet(w, r, u)
+	if !ok {
 		return
 	}
-	wallets, err := s.deps.Store.WalletsForUser(r.Context(), u.UserID)
-	if err != nil {
-		serverError(w, err)
-		return
-	}
-	visible := false
-	for _, wl := range wallets {
-		if wl.ID == id {
-			visible = true
-			break
-		}
-	}
-	if !visible {
-		writeError(w, http.StatusNotFound, "wallet not found")
-		return
-	}
+	s.journalPage(w, r, []int64{id}, false)
+}
 
-	f, err := parseJournalQuery(r)
+// journals pages through the stored journals of the wallet_ids the user can
+// see, merged newest first. Entry ids repeat across wallets, so entries carry
+// their wallet_id and the cursor is "<date>-<id>-<wallet_id>".
+func (s *server) journals(w http.ResponseWriter, r *http.Request, u store.User) {
+	ids, ok := s.queryWallets(w, r, u)
+	if !ok {
+		return
+	}
+	s.journalPage(w, r, ids, true)
+}
+
+// journalPage writes one page of the journal of ids (one wallet unless multi).
+func (s *server) journalPage(w http.ResponseWriter, r *http.Request, ids []int64, multi bool) {
+	f, err := parseJournalQuery(r, multi)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	f.WalletID = id
+	if multi {
+		f.WalletIDs = ids
+	} else {
+		f.WalletID = ids[0]
+	}
 	pageSize := f.Limit
 	f.Limit = pageSize + 1 // one extra row tells whether another page exists
 	rows, err := s.deps.Store.Journal(r.Context(), f)
@@ -69,7 +73,12 @@ func (s *server) walletJournal(w http.ResponseWriter, r *http.Request, u store.U
 		serverError(w, err)
 		return
 	}
-	types, err := s.deps.Store.JournalRefTypes(r.Context(), id)
+	var types []string
+	if multi {
+		types, err = s.deps.Store.JournalRefTypesFor(r.Context(), ids)
+	} else {
+		types, err = s.deps.Store.JournalRefTypes(r.Context(), ids[0])
+	}
 	if err != nil {
 		serverError(w, err)
 		return
@@ -79,16 +88,75 @@ func (s *server) walletJournal(w http.ResponseWriter, r *http.Request, u store.U
 		rows = rows[:pageSize]
 		last := rows[pageSize-1]
 		c := strconv.FormatInt(last.Date.Unix(), 10) + "-" + strconv.FormatInt(last.ID, 10)
+		if multi {
+			c += "-" + strconv.FormatInt(last.WalletID, 10)
+		}
 		next = &c
 	}
 	entries := make([]journalEntryJSON, 0, len(rows))
 	for _, e := range rows {
-		entries = append(entries, journalEntryJSON{ID: e.ID, Date: e.Date.Unix(), Cents: e.AmountCents, RefType: e.RefType, Description: e.Description})
+		je := journalEntryJSON{ID: e.ID, Date: e.Date.Unix(), Cents: e.AmountCents, RefType: e.RefType, Description: e.Description}
+		if multi {
+			je.WalletID = e.WalletID
+		}
+		entries = append(entries, je)
 	}
 	if types == nil {
 		types = []string{}
 	}
 	writeJSON(w, r, http.StatusOK, map[string]any{"entries": entries, "next_cursor": next, "ref_types": types})
+}
+
+// pathWallet resolves the {id} path value to a wallet the user can see; an
+// unknown wallet and one of another user both answer 404.
+func (s *server) pathWallet(w http.ResponseWriter, r *http.Request, u store.User) (int64, bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusNotFound, "wallet not found")
+		return 0, false
+	}
+	if !s.allVisible(w, r, u, []int64{id}) {
+		return 0, false
+	}
+	return id, true
+}
+
+// queryWallets parses the wallet_ids parameter (required, same cap as
+// /api/series) and answers 404 unless every id is visible to the user.
+func (s *server) queryWallets(w http.ResponseWriter, r *http.Request, u store.User) ([]int64, bool) {
+	ids, err := parseIDs(r.URL.Query().Get("wallet_ids"))
+	if err == nil && len(ids) == 0 {
+		err = errors.New("wallet_ids is required")
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return nil, false
+	}
+	if !s.allVisible(w, r, u, ids) {
+		return nil, false
+	}
+	return ids, true
+}
+
+// allVisible reports whether every id is a wallet the user can see; otherwise
+// it answers 404 (or 500 when the lookup fails) and returns false.
+func (s *server) allVisible(w http.ResponseWriter, r *http.Request, u store.User, ids []int64) bool {
+	wallets, err := s.deps.Store.WalletsForUser(r.Context(), u.UserID)
+	if err != nil {
+		serverError(w, err)
+		return false
+	}
+	visible := make(map[int64]bool, len(wallets))
+	for _, wl := range wallets {
+		visible[wl.ID] = true
+	}
+	for _, id := range ids {
+		if !visible[id] {
+			writeError(w, http.StatusNotFound, "wallet not found")
+			return false
+		}
+	}
+	return true
 }
 
 type dailyTotalJSON struct {
@@ -103,29 +171,26 @@ type dailyTotalJSON struct {
 // before to (or before now when to is absent). Days run ascending and are zero-filled between the first and
 // the last one; expenses are positive magnitudes.
 func (s *server) walletJournalDaily(w http.ResponseWriter, r *http.Request, u store.User) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || id <= 0 {
-		writeError(w, http.StatusNotFound, "wallet not found")
+	id, ok := s.pathWallet(w, r, u)
+	if !ok {
 		return
 	}
-	wallets, err := s.deps.Store.WalletsForUser(r.Context(), u.UserID)
-	if err != nil {
-		serverError(w, err)
-		return
-	}
-	visible := false
-	for _, wl := range wallets {
-		if wl.ID == id {
-			visible = true
-			break
-		}
-	}
-	if !visible {
-		writeError(w, http.StatusNotFound, "wallet not found")
-		return
-	}
+	s.dailyTotalsFor(w, r, store.JournalFilter{WalletID: id})
+}
 
-	f, err := parseJournalQuery(r)
+// journalsDaily is walletJournalDaily summed across the wallet_ids the user can
+// see.
+func (s *server) journalsDaily(w http.ResponseWriter, r *http.Request, u store.User) {
+	ids, ok := s.queryWallets(w, r, u)
+	if !ok {
+		return
+	}
+	s.dailyTotalsFor(w, r, store.JournalFilter{WalletIDs: ids})
+}
+
+// dailyTotalsFor answers the daily totals of the wallets selected by base.
+func (s *server) dailyTotalsFor(w http.ResponseWriter, r *http.Request, base store.JournalFilter) {
+	f, err := parseJournalQuery(r, len(base.WalletIDs) > 0)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -141,7 +206,7 @@ func (s *server) walletJournalDaily(w http.ResponseWriter, r *http.Request, u st
 			return
 		}
 	}
-	f.WalletID = id
+	f.WalletID, f.WalletIDs = base.WalletID, base.WalletIDs
 	if f.From.IsZero() {
 		end := f.To
 		if end.IsZero() {
@@ -195,8 +260,9 @@ func dailyTotals(rows []store.JournalAmount, loc *time.Location) []dailyTotalJSO
 }
 
 // parseJournalQuery reads limit, cursor, ref_type, from and to. Limit holds
-// the page size on return.
-func parseJournalQuery(r *http.Request) (store.JournalFilter, error) {
+// the page size on return. The cursor is "<date>-<id>", or "<date>-<id>-<wallet_id>"
+// when multi is set.
+func parseJournalQuery(r *http.Request, multi bool) (store.JournalFilter, error) {
 	q := r.URL.Query()
 	f := store.JournalFilter{Limit: defaultJournalLimit}
 	if raw := q.Get("limit"); raw != "" {
@@ -207,13 +273,26 @@ func parseJournalQuery(r *http.Request) (store.JournalFilter, error) {
 		f.Limit = n
 	}
 	if raw := q.Get("cursor"); raw != "" {
-		date, id, ok := strings.Cut(raw, "-")
-		sec, err1 := strconv.ParseInt(date, 10, 64)
-		entry, err2 := strconv.ParseInt(id, 10, 64)
-		if !ok || err1 != nil || err2 != nil || sec < 0 || entry < 0 {
+		parts := strings.Split(raw, "-")
+		want := 2
+		if multi {
+			want = 3
+		}
+		if len(parts) != want {
 			return f, errors.New("invalid cursor")
 		}
-		f.After = &store.JournalCursor{Date: time.Unix(sec, 0).UTC(), ID: entry}
+		nums := make([]int64, want)
+		for i, p := range parts {
+			n, err := strconv.ParseInt(p, 10, 64)
+			if err != nil || n < 0 {
+				return f, errors.New("invalid cursor")
+			}
+			nums[i] = n
+		}
+		f.After = &store.JournalCursor{Date: time.Unix(nums[0], 0).UTC(), ID: nums[1]}
+		if multi {
+			f.After.WalletID = nums[2]
+		}
 	}
 	f.RefType = q.Get("ref_type")
 	if len(f.RefType) > maxRefTypeLen {

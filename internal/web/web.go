@@ -86,6 +86,8 @@ func New(deps Deps) http.Handler {
 	mux.HandleFunc("/api/me", requireUser(s.me))
 	mux.HandleFunc("/api/wallets", requireUser(s.wallets))
 	mux.HandleFunc("POST /api/wallets/{id}/label", requireUser(s.renameWallet))
+	mux.HandleFunc("GET /api/journal", requireUser(s.journals))
+	mux.HandleFunc("GET /api/journal/daily", requireUser(s.journalsDaily))
 	mux.HandleFunc("GET /api/wallets/{id}/journal", requireUser(s.walletJournal))
 	mux.HandleFunc("GET /api/wallets/{id}/journal/daily", requireUser(s.walletJournalDaily))
 	mux.HandleFunc("/api/loyalty", requireUser(s.loyalty))

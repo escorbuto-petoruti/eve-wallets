@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -395,5 +396,238 @@ func TestJournalDailyNotFoundForUnknownOrForeignWallet(t *testing.T) {
 	target := "/api/wallets/" + itoa(f.charID) + "/journal/daily"
 	if rec := request(f.anon, http.MethodGet, target, nil); rec.Code != http.StatusUnauthorized {
 		t.Errorf("anonymous status = %d", rec.Code)
+	}
+}
+
+type multiEntry struct {
+	WalletID int64  `json:"wallet_id"`
+	ID       int64  `json:"id"`
+	Cents    int64  `json:"cents"`
+	RefType  string `json:"ref_type"`
+}
+
+type multiJournalResp struct {
+	Entries    []multiEntry `json:"entries"`
+	NextCursor *string      `json:"next_cursor"`
+	RefTypes   []string     `json:"ref_types"`
+	Error      string       `json:"error"`
+}
+
+func (m multiJournalResp) keys() [][2]int64 {
+	out := [][2]int64{}
+	for _, e := range m.Entries {
+		out = append(out, [2]int64{e.WalletID, e.ID})
+	}
+	return out
+}
+
+func multiGet(f *fixture, path string, q url.Values) (int, string) {
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+	rec := do(f.h, http.MethodGet, path)
+	return rec.Code, rec.Body.String()
+}
+
+func ids2(f *fixture) string { return itoa(f.charID) + "," + itoa(f.corpID) }
+
+// seedMulti stores entries whose ids collide across the two visible wallets.
+func seedMulti(t *testing.T, f *fixture) {
+	t.Helper()
+	ctx := context.Background()
+	at := func(h int) time.Time { return base.Add(time.Duration(h) * time.Hour) }
+	if _, err := f.st.AddJournalEntries(ctx, f.charID, []store.JournalEntry{
+		{ID: 1, Date: at(1), AmountCents: 100, RefType: "bounty_prizes", Description: "a1"},
+		{ID: 2, Date: at(2), AmountCents: -250, RefType: "market_fee", Description: "a2"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.st.AddJournalEntries(ctx, f.corpID, []store.JournalEntry{
+		{ID: 1, Date: at(1), AmountCents: 7, RefType: "corp_tax", Description: "b1"},
+		{ID: 2, Date: at(2), AmountCents: 40, RefType: "market_fee", Description: "b2"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestJournalAcrossWalletsPagesWithoutSkippingOrRepeating(t *testing.T) {
+	f := newFixture(t, nil, true)
+	seedMulti(t, f)
+	code, body := multiGet(f, "/api/journal", url.Values{"wallet_ids": {ids2(f)}})
+	var all multiJournalResp
+	_ = json.Unmarshal([]byte(body), &all)
+	want := [][2]int64{{f.corpID, 2}, {f.charID, 2}, {f.corpID, 1}, {f.charID, 1}}
+	if f.corpID < f.charID {
+		want = [][2]int64{{f.charID, 2}, {f.corpID, 2}, {f.charID, 1}, {f.corpID, 1}}
+	}
+	if code != http.StatusOK || !reflect.DeepEqual(all.keys(), want) || all.NextCursor != nil {
+		t.Fatalf("all = %d %s", code, body)
+	}
+	if !reflect.DeepEqual(all.RefTypes, []string{"bounty_prizes", "corp_tax", "market_fee"}) {
+		t.Fatalf("ref types = %v", all.RefTypes)
+	}
+	var got [][2]int64
+	cursor := ""
+	for range 5 {
+		q := url.Values{"wallet_ids": {ids2(f)}, "limit": {"1"}}
+		if cursor != "" {
+			q.Set("cursor", cursor)
+		}
+		code, body := multiGet(f, "/api/journal", q)
+		var page multiJournalResp
+		_ = json.Unmarshal([]byte(body), &page)
+		if code != http.StatusOK {
+			t.Fatalf("page status = %d %s", code, body)
+		}
+		got = append(got, page.keys()...)
+		if page.NextCursor == nil {
+			break
+		}
+		cursor = *page.NextCursor
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("paged = %v, want %v", got, want)
+	}
+	e := all.Entries[0]
+	if e.WalletID == 0 || e.Cents == 0 || e.RefType == "" {
+		t.Fatalf("entry = %+v", e)
+	}
+}
+
+func TestJournalAcrossWalletsFilters(t *testing.T) {
+	f := newFixture(t, nil, true)
+	seedMulti(t, f)
+	var r multiJournalResp
+	_, body := multiGet(f, "/api/journal", url.Values{"wallet_ids": {ids2(f)}, "ref_type": {"market_fee"}})
+	_ = json.Unmarshal([]byte(body), &r)
+	if len(r.Entries) != 2 || len(r.RefTypes) != 3 {
+		t.Fatalf("by type = %s", body)
+	}
+	at := base.Add(time.Hour).Format(time.RFC3339)
+	_, body = multiGet(f, "/api/journal", url.Values{"wallet_ids": {ids2(f)}, "from": {at}, "to": {at}})
+	r = multiJournalResp{}
+	_ = json.Unmarshal([]byte(body), &r)
+	if len(r.Entries) != 2 || r.Entries[0].ID != 1 {
+		t.Fatalf("range = %s", body)
+	}
+	// A subset of the wallets only lists its own types.
+	_, body = multiGet(f, "/api/journal", url.Values{"wallet_ids": {itoa(f.corpID)}})
+	r = multiJournalResp{}
+	_ = json.Unmarshal([]byte(body), &r)
+	if !reflect.DeepEqual(r.RefTypes, []string{"corp_tax", "market_fee"}) || len(r.Entries) != 2 {
+		t.Fatalf("subset = %s", body)
+	}
+}
+
+func TestMultiWalletJournalRejectsForeignAndInvalidIDs(t *testing.T) {
+	f := newFixture(t, nil, true)
+	seedMulti(t, f)
+	ctx := context.Background()
+	f.addUser(t, 2, "Bob")
+	bob, err := f.st.UpsertWallet(ctx, store.Wallet{Kind: store.KindCharacter, OwnerID: 2, OwnerName: "Bob"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.link(t, 2, bob)
+	tooMany := make([]string, maxWalletIDs+1)
+	for i := range tooMany {
+		tooMany[i] = itoa(int64(i + 1))
+	}
+	for _, path := range []string{"/api/journal", "/api/journal/daily"} {
+		for name, ids := range map[string]string{
+			"foreign among visible": itoa(f.charID) + "," + itoa(bob),
+			"foreign only":          itoa(bob),
+			"unknown":               itoa(f.charID) + ",99999",
+		} {
+			if code, body := multiGet(f, path, url.Values{"wallet_ids": {ids}}); code != http.StatusNotFound {
+				t.Errorf("%s %s: status = %d %s", path, name, code, body)
+			}
+		}
+		for name, q := range map[string]url.Values{
+			"missing":   {},
+			"empty":     {"wallet_ids": {""}},
+			"text":      {"wallet_ids": {"a,b"}},
+			"zero":      {"wallet_ids": {"0"}},
+			"too many":  {"wallet_ids": {strings.Join(tooMany, ",")}},
+			"bad limit": {"wallet_ids": {ids2(f)}, "limit": {"0"}},
+			"bad tz":    {"wallet_ids": {ids2(f)}, "tz": {"Nope/Zone"}},
+		} {
+			if path == "/api/journal/daily" && name == "bad limit" {
+				continue // the daily endpoint ignores limit like the per-wallet one
+			}
+			if path == "/api/journal" && name == "bad tz" {
+				continue
+			}
+			if code, body := multiGet(f, path, q); code != http.StatusBadRequest {
+				t.Errorf("%s %s: status = %d %s", path, name, code, body)
+			}
+		}
+		if rec := request(f.anon, http.MethodGet, path+"?wallet_ids="+itoa(f.charID), nil); rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s anonymous status = %d", path, rec.Code)
+		}
+	}
+	for name, cur := range map[string]string{"two parts": "5-1", "garbage": "a-b-c", "negative": "1-2--3"} {
+		if code, _ := multiGet(f, "/api/journal", url.Values{"wallet_ids": {ids2(f)}, "cursor": {cur}}); code != http.StatusBadRequest {
+			t.Errorf("cursor %s: status = %d", name, code)
+		}
+	}
+	// The per-wallet cursor format is unchanged: three parts are rejected there.
+	if got, code, _ := journalGet(f, f.charID, url.Values{"cursor": {"5-1-2"}}); code != http.StatusBadRequest {
+		t.Errorf("per-wallet 3-part cursor = %d %+v", code, got)
+	}
+}
+
+func TestJournalDailyAcrossWalletsSumsZeroFillsAndHonoursTimeZone(t *testing.T) {
+	f := newFixture(t, nil, true)
+	d := func(day, h int) time.Time { return time.Date(2026, 4, day, h, 0, 0, 0, time.UTC) }
+	ctx := context.Background()
+	if _, err := f.st.AddJournalEntries(ctx, f.charID, []store.JournalEntry{
+		{ID: 1, Date: d(27, 8), AmountCents: 100, RefType: "bounty_prizes"},
+		{ID: 2, Date: d(27, 9), AmountCents: -30, RefType: "market_fee"},
+		{ID: 3, Date: d(30, 23), AmountCents: -7, RefType: "market_fee"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.st.AddJournalEntries(ctx, f.corpID, []store.JournalEntry{
+		{ID: 1, Date: d(27, 10), AmountCents: 50, RefType: "corp_tax"},
+		{ID: 2, Date: d(29, 1), AmountCents: -5, RefType: "market_fee"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ids := ids2(f)
+	var got dailyResp
+	code, body := multiGet(f, "/api/journal/daily", url.Values{"wallet_ids": {ids}, "tz": {"UTC"}})
+	_ = json.Unmarshal([]byte(body), &got)
+	want := [][3]any{
+		{"2026-04-27", int64(150), int64(30)},
+		{"2026-04-28", int64(0), int64(0)},
+		{"2026-04-29", int64(0), int64(5)},
+		{"2026-04-30", int64(0), int64(7)},
+	}
+	if code != http.StatusOK || !reflect.DeepEqual(got.rows(), want) {
+		t.Fatalf("days = %d %s", code, body)
+	}
+	got = dailyResp{}
+	_, body = multiGet(f, "/api/journal/daily", url.Values{"wallet_ids": {ids}, "tz": {"Asia/Tokyo"}})
+	_ = json.Unmarshal([]byte(body), &got)
+	if len(got.Days) == 0 || got.Days[len(got.Days)-1].Day != "2026-05-01" {
+		t.Fatalf("tokyo days = %v", got.rows())
+	}
+	// ref_type narrows the sum to one type across both wallets.
+	got = dailyResp{}
+	_, body = multiGet(f, "/api/journal/daily", url.Values{"wallet_ids": {ids}, "ref_type": {"market_fee"}})
+	_ = json.Unmarshal([]byte(body), &got)
+	if !reflect.DeepEqual(got.rows(), [][3]any{
+		{"2026-04-27", int64(0), int64(30)}, {"2026-04-28", int64(0), int64(0)},
+		{"2026-04-29", int64(0), int64(5)}, {"2026-04-30", int64(0), int64(7)},
+	}) {
+		t.Fatalf("by type = %s", body)
+	}
+	// An empty window answers an empty list; without from it spans 30 days.
+	got = dailyResp{}
+	_, body = multiGet(f, "/api/journal/daily", url.Values{"wallet_ids": {ids}, "from": {d(1, 0).Format(time.RFC3339)}, "to": {d(2, 0).Format(time.RFC3339)}})
+	_ = json.Unmarshal([]byte(body), &got)
+	if len(got.Days) != 0 || !strings.Contains(body, `"days":[]`) {
+		t.Fatalf("empty = %s", body)
 	}
 }

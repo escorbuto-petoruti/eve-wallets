@@ -191,7 +191,11 @@ body.chart-expanded .movements-dialog.expand-dialog[open] { flex: 1 1 auto; min-
 .movements-table th:nth-child(2), .movements-table td:nth-child(2) { width: 7rem; }
 .movements-table th:nth-child(3), .movements-table td:nth-child(3) { width: 8rem; text-align: right; font-family: ui-monospace, monospace; font-variant-numeric: tabular-nums; }
 .movements-table td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.movements-type, .movements-desc { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.movements-type, .movements-wallet, .movements-desc { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Total mode adds a Wallet column after Date, so the later columns shift by one. */
+.movements-table.movements-total th:nth-child(2), .movements-table.movements-total td:nth-child(2) { width: 8rem; }
+.movements-table.movements-total th:nth-child(3), .movements-table.movements-total td:nth-child(3) { width: 7rem; text-align: left; font-family: inherit; font-variant-numeric: normal; }
+.movements-table.movements-total th:nth-child(4), .movements-table.movements-total td:nth-child(4) { width: 8rem; text-align: right; font-family: ui-monospace, monospace; font-variant-numeric: tabular-nums; }
 .movements-pager { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px 12px; margin-top: .5rem; min-height: 2.2rem; }
 .movements-pager button { padding: .15rem .6rem; }
 .movements-page { min-width: 5em; text-align: center; }
@@ -202,6 +206,10 @@ body.chart-expanded .movements-dialog.expand-dialog[open] { flex: 1 1 auto; min-
   .movements-table th:nth-child(2), .movements-table td:nth-child(2) { display: none; }
   .movements-table th:nth-child(1), .movements-table td:nth-child(1) { width: 8.5rem; }
   .movements-table th:nth-child(3), .movements-table td:nth-child(3) { width: 7.5rem; }
+  /* Total mode keeps the Wallet column and hides Type instead. */
+  .movements-table.movements-total th:nth-child(2), .movements-table.movements-total td:nth-child(2) { display: table-cell; width: 6rem; }
+  .movements-table.movements-total th:nth-child(3), .movements-table.movements-total td:nth-child(3) { display: none; }
+  .movements-table.movements-total th:nth-child(4), .movements-table.movements-total td:nth-child(4) { width: 7.5rem; }
 }
 
 /* Loyalty points: one block per character with a corporation table. */

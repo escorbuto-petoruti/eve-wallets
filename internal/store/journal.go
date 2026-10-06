@@ -9,7 +9,8 @@ import (
 
 // JournalEntry is one stored wallet journal row. AmountCents is signed.
 type JournalEntry struct {
-	ID          int64 // the ESI journal entry id
+	WalletID    int64 // filled by Journal; AddJournalEntries takes it as an argument
+	ID          int64 // the ESI journal entry id (unique per wallet only)
 	Date        time.Time
 	AmountCents int64
 	RefType     string
@@ -17,22 +18,26 @@ type JournalEntry struct {
 }
 
 // JournalCursor is the keyset position after which a page continues: the Date
-// and ID of the last entry already seen.
+// and ID of the last entry already seen. WalletID completes the position when
+// the filter spans several wallets, because entry ids repeat across wallets.
 type JournalCursor struct {
-	Date time.Time
-	ID   int64
+	Date     time.Time
+	ID       int64
+	WalletID int64
 }
 
-// JournalFilter selects journal rows of one wallet, newest first. RefType ""
+// JournalFilter selects journal rows of one wallet (WalletID) or of several
+// (WalletIDs, which takes precedence when not empty), newest first. RefType ""
 // matches every type; a zero From or To leaves that side open (both are
 // inclusive, in seconds). After continues a previous page. Limit is the
 // maximum number of rows returned.
 type JournalFilter struct {
-	WalletID int64
-	RefType  string
-	From, To time.Time
-	After    *JournalCursor
-	Limit    int
+	WalletID  int64
+	WalletIDs []int64
+	RefType   string
+	From, To  time.Time
+	After     *JournalCursor
+	Limit     int
 }
 
 // AddJournalEntries stores entries for a wallet in one transaction and returns
@@ -75,9 +80,7 @@ func (s *Store) AddJournalEntries(ctx context.Context, walletID int64, entries [
 // Journal returns the rows matching f ordered newest first (date, then entry
 // id, both descending).
 func (s *Store) Journal(ctx context.Context, f JournalFilter) ([]JournalEntry, error) {
-	var where []string
-	args := []any{f.WalletID}
-	where = append(where, "wallet_id = ?")
+	where, args := walletClause(f)
 	if f.RefType != "" {
 		where = append(where, "ref_type = ?")
 		args = append(args, f.RefType)
@@ -90,15 +93,25 @@ func (s *Store) Journal(ctx context.Context, f JournalFilter) ([]JournalEntry, e
 		where = append(where, "date <= ?")
 		args = append(args, f.To.Unix())
 	}
+	order := "date DESC, entry_id DESC"
+	if len(f.WalletIDs) > 0 {
+		order += ", wallet_id DESC"
+	}
 	if f.After != nil {
-		where = append(where, "(date < ? OR (date = ? AND entry_id < ?))")
-		args = append(args, f.After.Date.Unix(), f.After.Date.Unix(), f.After.ID)
+		d := f.After.Date.Unix()
+		if len(f.WalletIDs) > 0 {
+			where = append(where, "(date < ? OR (date = ? AND (entry_id < ? OR (entry_id = ? AND wallet_id < ?))))")
+			args = append(args, d, d, f.After.ID, f.After.ID, f.After.WalletID)
+		} else {
+			where = append(where, "(date < ? OR (date = ? AND entry_id < ?))")
+			args = append(args, d, d, f.After.ID)
+		}
 	}
 	args = append(args, f.Limit)
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT entry_id, date, amount_cents, ref_type, description
+		SELECT wallet_id, entry_id, date, amount_cents, ref_type, description
 		FROM journal WHERE `+strings.Join(where, " AND ")+`
-		ORDER BY date DESC, entry_id DESC LIMIT ?`, args...)
+		ORDER BY `+order+` LIMIT ?`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list journal: %w", err)
 	}
@@ -107,7 +120,7 @@ func (s *Store) Journal(ctx context.Context, f JournalFilter) ([]JournalEntry, e
 	for rows.Next() {
 		var e JournalEntry
 		var at int64
-		if err := rows.Scan(&e.ID, &at, &e.AmountCents, &e.RefType, &e.Description); err != nil {
+		if err := rows.Scan(&e.WalletID, &e.ID, &at, &e.AmountCents, &e.RefType, &e.Description); err != nil {
 			return nil, fmt.Errorf("store: scan journal: %w", err)
 		}
 		e.Date = time.Unix(at, 0).UTC()
@@ -126,8 +139,7 @@ type JournalAmount struct {
 // matches its RefType, From and To (inclusive), oldest first. Limit and After
 // are ignored: the caller aggregates the whole range.
 func (s *Store) JournalAmounts(ctx context.Context, f JournalFilter) ([]JournalAmount, error) {
-	where := []string{"wallet_id = ?"}
-	args := []any{f.WalletID}
+	where, args := walletClause(f)
 	if f.RefType != "" {
 		where = append(where, "ref_type = ?")
 		args = append(args, f.RefType)
@@ -142,7 +154,7 @@ func (s *Store) JournalAmounts(ctx context.Context, f JournalFilter) ([]JournalA
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT date, amount_cents FROM journal WHERE `+strings.Join(where, " AND ")+`
-		ORDER BY date, entry_id`, args...)
+		ORDER BY date, entry_id, wallet_id`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list journal amounts: %w", err)
 	}
@@ -165,6 +177,42 @@ func (s *Store) JournalAmounts(ctx context.Context, f JournalFilter) ([]JournalA
 func (s *Store) JournalRefTypes(ctx context.Context, walletID int64) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT DISTINCT ref_type FROM journal WHERE wallet_id = ? ORDER BY ref_type`, walletID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list journal types: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			return nil, fmt.Errorf("store: scan journal type: %w", err)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// walletClause starts the WHERE conditions with the wallet selection of f.
+func walletClause(f JournalFilter) ([]string, []any) {
+	if len(f.WalletIDs) == 0 {
+		return []string{"wallet_id = ?"}, []any{f.WalletID}
+	}
+	args := make([]any, len(f.WalletIDs))
+	for i, id := range f.WalletIDs {
+		args[i] = id
+	}
+	return []string{"wallet_id IN (?" + strings.Repeat(",?", len(args)-1) + ")"}, args
+}
+
+// JournalRefTypesFor returns the union of the distinct reference types stored
+// for the given wallets, sorted alphabetically.
+func (s *Store) JournalRefTypesFor(ctx context.Context, walletIDs []int64) ([]string, error) {
+	if len(walletIDs) == 0 {
+		return nil, nil
+	}
+	where, args := walletClause(JournalFilter{WalletIDs: walletIDs})
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT ref_type FROM journal WHERE `+where[0]+` ORDER BY ref_type`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list journal types: %w", err)
 	}
