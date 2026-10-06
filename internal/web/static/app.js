@@ -832,7 +832,7 @@
           labels: days.map(function (d) { return d.day; }),
           datasets: [
             { label: "Income", data: days.map(function (d) { return d.income_cents / 100; }), backgroundColor: good, borderRadius: 3 },
-            { label: "Expenses", data: days.map(function (d) { return d.expense_cents / 100; }), backgroundColor: bad, borderRadius: 3 }
+            { label: "Expenses", data: days.map(function (d) { return -d.expense_cents / 100; }), backgroundColor: bad, borderRadius: 3 }
           ]
         },
         options: {
@@ -841,12 +841,23 @@
           animation: false,
           interaction: { mode: "index", intersect: false },
           scales: {
-            x: { ticks: { color: c.text, maxRotation: 0, autoSkip: true }, grid: { display: false } },
-            y: { beginAtZero: true, ticks: { color: c.text, callback: function (v) { return iskFmt.format(v); } }, grid: { color: c.grid } }
+            x: { stacked: true, ticks: { color: c.text, maxRotation: 0, autoSkip: true }, grid: { display: false } },
+            y: { stacked: true, beginAtZero: true, ticks: { color: c.text, callback: function (v) { return iskFmt.format(v); } }, grid: { color: c.grid } }
           },
           plugins: {
             legend: { labels: { color: c.text, boxWidth: 12, boxHeight: 12 } },
-            tooltip: { callbacks: { label: function (ctx) { return ctx.dataset.label + ": " + iskFmt.format(ctx.parsed.y) + " ISK"; } } }
+            // Expenses are drawn below zero; the tooltip shows them as a positive
+            // amount and adds the day's result (income minus expenses).
+            tooltip: {
+              callbacks: {
+                label: function (ctx) { return ctx.dataset.label + ": " + iskFmt.format(Math.abs(ctx.parsed.y)) + " ISK"; },
+                footer: function (items) {
+                  if (!items.length) { return ""; }
+                  var d = days[items[0].dataIndex];
+                  return "Net: " + signedISK(d.income_cents - d.expense_cents) + " ISK";
+                }
+              }
+            }
           }
         }
       });

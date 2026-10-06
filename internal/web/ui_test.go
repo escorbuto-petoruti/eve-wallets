@@ -601,7 +601,10 @@ func TestAppHasMovementsDailyChart(t *testing.T) {
 		`"No daily totals for this range."`,
 		`getPropertyValue("--good")`,
 		`getPropertyValue("--bad")`,
-		"iskFmt.format(ctx.parsed.y)",
+		"iskFmt.format(Math.abs(ctx.parsed.y))", // expenses are drawn below zero, shown as positive
+		"-d.expense_cents / 100",                // downward bars
+		"stacked: true",
+		`"Net: " + signedISK(d.income_cents - d.expense_cents)`, // the tooltip adds the day result
 		"income_cents", "expense_cents",
 	} {
 		if !strings.Contains(js, want) {
