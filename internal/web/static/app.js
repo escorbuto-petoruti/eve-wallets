@@ -201,8 +201,9 @@
     return groups;
   }
 
-  function destroyCharts(section) {
-    if (section.expand) { section.expand.close(); } // its chart is not in section.charts
+  // keepExpand leaves the expanded dialog open (a range change refreshes it).
+  function destroyCharts(section, keepExpand) {
+    if (section.expand && !keepExpand) { section.expand.close(); } // its chart is not in section.charts
     section.charts.forEach(function (c) { c.destroy(); });
     section.charts = [];
   }
@@ -211,6 +212,7 @@
     state.sections.forEach(function (s) {
       s.token++; // drop late responses
       destroyCharts(s);
+      s.expandBox.remove();
       s.tab.remove();
     });
     state.sections = [];
@@ -268,7 +270,9 @@
     section.movements = buildMovements(section);
     card.appendChild(section.movementsBox);
     section.expand = buildExpand(section);
-    card.appendChild(section.expandBox);
+    // Docked right under the time range section (not inside the tab panel), so
+    // the ranges are never covered.
+    $("controls").insertAdjacentElement("afterend", section.expandBox);
 
     card.appendChild(el("h3", "Latest balances"));
     var scroll = el("div", undefined, "scroll");
@@ -1009,6 +1013,7 @@
       expandBtn.setAttribute("aria-label", "Expand chart for " + (opts.wallet ? walletLabel(opts.wallet) : opts.label));
       expandBtn.addEventListener("click", function () { section.expand.open(opts, expandBtn); });
       panel.insertBefore(expandBtn, box);
+      section.expand.sync(opts, expandBtn);
     }
     section.grid.appendChild(panel);
     if (opts.points.length) { drawSpark(section, canvas, opts); }
@@ -1074,13 +1079,15 @@
   }
 
   // buildExpand is the one dialog of a section that shows a panel's balance
-  // chart large. It follows the Movements dialog: Close or Escape returns focus
-  // to the Expand button, and the chart is destroyed on every way of closing
-  // (including a rebuild of the grid, through destroyCharts).
+  // chart large. It is non-modal and sits right below the time range controls, so
+  // the ranges stay visible and clickable; Close or Escape returns focus to the
+  // Expand button, and the chart is destroyed on every way of closing. A
+  // rebuild of the grid (a range change) keeps it open and refreshes it for the
+  // same panel through begin/sync/finish.
   function buildExpand(section) {
     var box = document.createElement("dialog");
     box.className = "movements-dialog expand-dialog";
-    var modal = typeof box.showModal === "function";
+    var canShow = typeof box.show === "function";
     box.hidden = true;
     var title = el("h3", "", "movements-title");
     title.id = "expand-title-" + section.panel.id;
@@ -1101,17 +1108,38 @@
     var chart = null;
     var trigger = null;
     var opened = false;
+    var curKey = null;
+    var synced = false;
+    function keyOf(opts) { return opts.wallet ? "w" + opts.wallet.id : "total"; }
+    function onDocKey(ev) {
+      if (ev.key !== "Escape" || ev.defaultPrevented) { return; }
+      if (document.querySelector("dialog.movements-dialog:not(.expand-dialog)[open]")) { return; } // a modal dialog owns Escape
+      ev.preventDefault();
+      close();
+    }
+    function render(opts) {
+      var label = opts.wallet ? walletLabel(opts.wallet) : opts.label;
+      title.textContent = "Balance history: " + label;
+      canvas.setAttribute("aria-label", "Balance history for " + label);
+      if (chart) { chart.destroy(); chart = null; }
+      // Theme colors are read now, after the dialog is shown.
+      chart = new Chart(canvas, lineConfig({ label: label, points: opts.points, color: opts.color, dashed: opts.dashed }, true));
+    }
     // reset runs on every way of closing and is safe to call twice.
     function reset() {
       if (!opened) { return; }
       opened = false;
+      curKey = null;
+      document.removeEventListener("keydown", onDocKey);
       if (chart) { chart.destroy(); chart = null; }
       box.hidden = true;
       if (trigger) { trigger.focus(); }
       trigger = null;
     }
     function close() {
-      if (modal && box.open) { box.close(); }
+      if (box.open) {
+        if (typeof box.close === "function") { box.close(); } else { box.removeAttribute("open"); }
+      }
       reset();
     }
     function open(opts, btn) {
@@ -1119,28 +1147,41 @@
       close();
       opened = true;
       trigger = btn;
-      var label = opts.wallet ? walletLabel(opts.wallet) : opts.label;
-      title.textContent = "Balance history: " + label;
-      canvas.setAttribute("aria-label", "Balance history for " + label);
+      curKey = keyOf(opts);
       box.hidden = false;
-      if (modal) { if (!box.open) { box.showModal(); } }
+      if (!box.open) { if (canShow) { box.show(); } else { box.setAttribute("open", ""); } }
+      document.addEventListener("keydown", onDocKey);
       closeBtn.focus();
-      // Theme colors are read now, after the dialog is shown.
-      chart = new Chart(canvas, lineConfig({ label: label, points: opts.points, color: opts.color, dashed: opts.dashed }, true));
+      render(opts);
+    }
+    // begin, sync and finish run around a grid rebuild: sync refreshes the open
+    // dialog from the new data of the same panel (and points it at the new
+    // Expand button); finish closes it when that panel has no points anymore.
+    function begin() { synced = false; }
+    function sync(opts, btn) {
+      if (!opened || keyOf(opts) !== curKey) { return; }
+      synced = true;
+      trigger = btn;
+      render(opts);
+    }
+    function finish() {
+      if (!opened || synced) { return; }
+      trigger = null; // the old button is gone with the grid
+      close();
+      var on = document.querySelector("#ranges button.active");
+      if (on) { on.focus(); }
     }
     closeBtn.addEventListener("click", close);
     box.addEventListener("close", reset);
-    box.addEventListener("keydown", function (ev) {
-      if (ev.key === "Escape" && !modal) { ev.preventDefault(); close(); }
-    });
     section.expandBox = box;
-    return { open: open, close: close };
+    return { open: open, close: close, begin: begin, sync: sync, finish: finish };
   }
 
   // drawPanels rebuilds the grid: one panel per wallet (colored by its fixed
   // index in the owner group) plus the Total panel.
   function drawPanels(section, resp) {
-    destroyCharts(section);
+    destroyCharts(section, true);
+    section.expand.begin();
     section.grid.replaceChildren();
     var wallets = section.group.wallets;
     var byId = new Map();
@@ -1155,6 +1196,7 @@
     if (resp.total) {
       buildPanel(section, { label: "Total", cls: "total", color: totalColor(), dashed: true, image: null, points: resp.total, cents: null });
     }
+    section.expand.finish();
     section.drawn = true;
   }
 

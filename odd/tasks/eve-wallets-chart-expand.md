@@ -17,6 +17,7 @@ The per-wallet charts are small sparklines (ticks limited to 4 per axis, no lege
 
 ## Tasks
 - [x] T1 UI: Expand button per panel, enlarged chart dialog, CSS, structural UI test, README note. Commit: `feat(web): expand each balance chart in a dialog` on feat/chart-expand (id in git log; not self-referenced) (route: delegated writer). Evidence: gofmt clean, go build/vet, go test -count=1 ./..., go test -race ./internal/web/..., node --check app.js all passed; not run in a browser.
+- [x] T2 Fix: expanded view no longer covers the time range section (non-modal panel in the flow right under it, Escape handler, refreshes on range change, closes if its panel has no points). Commit: `fix(web): keep the time range usable while a chart is expanded` (route: delegated writer). Evidence: gofmt -l clean, go build, go vet, go test -count=1 ./..., go test -race ./internal/web/..., node --check app.js all passed; not run in a browser, so placement, narrow-width layout and focus behavior are unobserved.
 
 ## Routing / test policy
 - One delegated writer, one work-unit commit on `feat/chart-expand`; JS behavior covered by the literal-string UI test style plus `node --check` (no runnable JS RED).
