@@ -23,6 +23,7 @@ The dialog only lists journal rows 50 at a time, so the owner cannot see at a gl
 ## Tasks
 - [x] T1 store + endpoint: daily totals query, handler, route, tests (store with a temp SQLite DB, handler incl. 404, tz, filters, zero-fill, DST day).
 - [x] T2 UI: chart in the movements dialog (updates on Apply, respects filters, accessible summary), CSS, structural UI test, README Movements section and not-verified bullet.
+- [x] T3 review fixes: (a) from absent now defaults to 30 days before to/now (commit 2436dd3); (b) daily chart retries once without tz on a 400 (commit below in git log).
 
 ## Routing / test policy
 - Test-first when a runnable deterministic test exists; RED observed before GREEN.
@@ -34,3 +35,4 @@ The dialog only lists journal rows 50 at a time, so the owner cannot see at a gl
 
 - T1 done: commit d552187. RED: store/web tests failed (undefined JournalAmounts, 404 route) before code; GREEN: gofmt/build/vet/test/race/node --check clean.
 - T2 done (commit below in git log). Pure JS: literal-string UI test + node --check; RED not observed for JS; not run in a browser. dataviz validator not run (reused --good/--bad tokens).
+- T3 done. (a) RED: TestJournalDailyBoundsWindowWhenOnlyToIsGiven returned income 23 instead of 18 before the fix, GREEN after. (b) literal-string UI test + node --check; RED not observed for JS; not run in a browser.

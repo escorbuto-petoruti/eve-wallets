@@ -590,7 +590,9 @@ func TestAppHasMovementsDailyChart(t *testing.T) {
 		"Intl.DateTimeFormat().resolvedOptions().timeZone",
 		`"tz=" +`,
 		"loadDaily()",
-		"cur.dailySeq", // stale answers are ignored
+		"cur.dailySeq",    // stale answers are ignored
+		"dailyUrl(false)", // retry without tz when the zone is rejected
+		"err.status !== 400",
 		"destroyChart()",
 		`type: "bar"`,
 		`"Income"`, `"Expenses"`,

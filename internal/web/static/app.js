@@ -62,7 +62,11 @@
           throw e;
         }
         if (epoch !== session.epoch) { var s = new Error("stale"); s.unauthorized = true; throw s; }
-        if (!r.ok) { throw new Error(body && body.error ? body.error : "request failed (" + r.status + ")"); }
+        if (!r.ok) {
+          var he = new Error(body && body.error ? body.error : "request failed (" + r.status + ")");
+          he.status = r.status;
+          throw he;
+        }
         return body;
       });
     });
@@ -750,8 +754,8 @@
       return "/api/wallets/" + encodeURIComponent(String(cur.wallet.id)) + "/journal?" + q.join("&");
     }
 
-    function dailyUrl() {
-      var q = ["tz=" + encodeURIComponent(tz)];
+    function dailyUrl(withTz) {
+      var q = withTz ? ["tz=" + encodeURIComponent(tz)] : [];
       if (typeSel.value) { q.push("ref_type=" + encodeURIComponent(typeSel.value)); }
       var f = dayBound(from.value, false);
       var t = dayBound(to.value, true);
@@ -821,7 +825,12 @@
       var t = dayBound(to.value, true);
       if (f && t && t < f) { return; }
       var seq = ++cur.dailySeq;
-      getJSON(dailyUrl()).then(function (resp) {
+      // A 400 while a tz was sent may mean the zone is unknown to the server;
+      // retry once without it (the server then groups in UTC). No loop.
+      getJSON(dailyUrl(true)).catch(function (err) {
+        if (err.unauthorized || seq !== cur.dailySeq || err.status !== 400 || !tz) { throw err; }
+        return getJSON(dailyUrl(false));
+      }).then(function (resp) {
         if (seq !== cur.dailySeq) { return; }
         showDaily(resp.days || []);
       }).catch(function (err) {
