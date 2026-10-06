@@ -642,6 +642,8 @@ func TestAppHasExpandedChart(t *testing.T) {
 		"section.expand.finish()",
 		"destroyCharts(section, true)",
 		`"expand-chart"`,
+		`balanceLine.textContent = hasBalance`,   // same balance line as the small panel
+		`deltaLine.className = "delta " + d.cls`, // and the same Up/Flat/Down delta line
 		"legend: { display: !!big",
 		`text: "ISK"`,
 		"iskFmt.format(item.parsed.y)",

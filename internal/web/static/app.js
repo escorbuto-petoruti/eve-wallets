@@ -1101,6 +1101,10 @@
     head.appendChild(title);
     head.appendChild(closeBtn);
     box.appendChild(head);
+    var balanceLine = el("p", "", "big num");
+    var deltaLine = el("p", "", "delta");
+    box.appendChild(balanceLine);
+    box.appendChild(deltaLine);
     var chartBox = el("div", undefined, "expand-chart");
     var canvas = document.createElement("canvas");
     canvas.setAttribute("role", "img");
@@ -1122,7 +1126,14 @@
     function render(opts) {
       var label = opts.wallet ? walletLabel(opts.wallet) : opts.label;
       title.textContent = "Balance history: " + label;
-      canvas.setAttribute("aria-label", "Balance history for " + label);
+      // Same balance and delta lines as the small panel.
+      var last = opts.points.length ? opts.points[opts.points.length - 1].cents : opts.cents;
+      var hasBalance = last !== null && last !== undefined;
+      var d = deltaInfo(opts.points);
+      balanceLine.textContent = hasBalance ? formatISK(last) + " ISK" : "No balance yet";
+      deltaLine.textContent = d.text;
+      deltaLine.className = "delta " + d.cls;
+      canvas.setAttribute("aria-label", "Balance history for " + label + ": " + (hasBalance ? formatISK(last) + " ISK now. " : "") + d.text);
       if (chart) { chart.destroy(); chart = null; }
       // Theme colors are read now, after the dialog is shown.
       chart = new Chart(canvas, lineConfig({ label: label, points: opts.points, color: opts.color, dashed: opts.dashed }, true));
