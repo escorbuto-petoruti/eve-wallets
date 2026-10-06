@@ -180,7 +180,8 @@ body.chart-expanded #status-card { display: none; }
 body.chart-expanded #sections .card { margin: 0; padding: 0; border: 0; background: none; box-shadow: none; }
 body.chart-expanded #sections .card > :not(.movements-dialog) { display: none; }
 body.chart-expanded .movements-dialog.expand-dialog[open] { flex: 1 1 auto; min-height: 0; height: auto; width: 100%; margin: .5rem auto 1rem; }
-.expand-chart { flex: 1 1 auto; min-height: 0; position: relative; margin-top: .5rem; }
+.expand-chart { flex: 1 1 0; min-height: 0; position: relative; margin-top: .5rem; }
+.expand-daily canvas { max-height: 100%; }
 .movements-open { margin: .25rem 0; padding: .15rem .6rem; font-size: .8rem; }
 .movements-scroll { border: 1px solid var(--border); border-radius: 6px; }
 .movements-body { flex: 1 1 auto; min-height: 0; overflow: auto; }

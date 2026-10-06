@@ -655,6 +655,86 @@
     return { total: true, wallets: all.slice(0, MAX_IDS), count: all.length };
   }
 
+  // journalURL is the journal URL of a target (a wallet, or the Total with its
+  // wallets), with its first params.
+  function journalURL(target, suffix, q) {
+    if (target.total) {
+      var ids = target.wallets.map(function (w) { return w.id; });
+      q.unshift("wallet_ids=" + encodeURIComponent(ids.join(",")));
+      return "/api/journal" + suffix + "?" + q.join("&");
+    }
+    return "/api/wallets/" + encodeURIComponent(String(target.id)) + "/journal" + suffix + "?" + q.join("&");
+  }
+
+  // browserTZ is the viewer's IANA time zone, used to group the daily totals.
+  function browserTZ() {
+    try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch (e) { return "UTC"; }
+  }
+
+  // fetchDaily loads the daily totals of a target. A 400 while a tz was sent
+  // may mean the zone is unknown to the server; it retries once without it (the
+  // server then groups in UTC). No loop.
+  function fetchDaily(target, q, tz) {
+    function url(withTz) { return journalURL(target, "/daily", (withTz ? ["tz=" + encodeURIComponent(tz)] : []).concat(q)); }
+    return getJSON(url(true)).catch(function (err) {
+      if (err.unauthorized || err.status !== 400 || !tz) { throw err; }
+      return getJSON(url(false));
+    });
+  }
+
+  // drawDailyChart draws the grouped bars (income and expenses per day) shared
+  // by the movements dialog and the expanded chart. Expenses are positive
+  // magnitudes from the server. Colors come from the theme tokens of the
+  // gain/loss amounts; the legend and the tooltip carry the identity, so color
+  // is never the only cue. It returns the chart so the caller can destroy it.
+  function drawDailyChart(canvas, days) {
+    var n = days.length;
+    var income = 0;
+    var expense = 0;
+    days.forEach(function (d) { income += d.income_cents; expense += d.expense_cents; });
+    canvas.setAttribute("aria-label", "Daily income and expenses over " + n + (n === 1 ? " day" : " days") +
+      ": total income " + formatISK(income) + " ISK, total expenses " + formatISK(expense) + " ISK");
+    var c = themeColors();
+    var cs = getComputedStyle(document.body);
+    var good = cs.getPropertyValue("--good").trim() || "#8ed7bc";
+    var bad = cs.getPropertyValue("--bad").trim() || "#ff8a8a";
+    return new Chart(canvas, {
+      type: "bar",
+      data: {
+        labels: days.map(function (d) { return d.day; }),
+        datasets: [
+          { label: "Income", data: days.map(function (d) { return d.income_cents / 100; }), backgroundColor: good, borderRadius: 3 },
+          { label: "Expenses", data: days.map(function (d) { return -d.expense_cents / 100; }), backgroundColor: bad, borderRadius: 3 }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        interaction: { mode: "index", intersect: false },
+        scales: {
+          x: { stacked: true, ticks: { color: c.text, maxRotation: 0, autoSkip: true }, grid: { display: false } },
+          y: { stacked: true, beginAtZero: true, ticks: { color: c.text, callback: function (v) { return iskFmt.format(v); } }, grid: { color: c.grid } }
+        },
+        plugins: {
+          legend: { labels: { color: c.text, boxWidth: 12, boxHeight: 12 } },
+          // Expenses are drawn below zero; the tooltip shows them as a positive
+          // amount and adds the day's result (income minus expenses).
+          tooltip: {
+            callbacks: {
+              label: function (ctx) { return ctx.dataset.label + ": " + iskFmt.format(Math.abs(ctx.parsed.y)) + " ISK"; },
+              footer: function (items) {
+                if (!items.length) { return ""; }
+                var d = days[items[0].dataIndex];
+                return "Net: " + signedISK(d.income_cents - d.expense_cents) + " ISK";
+              }
+            }
+          }
+        }
+      }
+    });
+  }
+
   // buildMovements returns the controller of a section's movements view: a
   // table of the stored journal of one wallet (or, for the Total, of all the
   // wallets it sums, with a Wallet column) with type and date filters and
@@ -720,8 +800,7 @@
     chartBox.appendChild(chartNote);
     box.appendChild(chartBox);
     var dailyChart = null;
-    var tz = "UTC";
-    try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch (e) { tz = "UTC"; }
+    var tz = browserTZ();
 
     // The table scrolls in the middle region of the dialog, between the fixed
     // top area and the pager; it is focusable so keyboard users can scroll it.
@@ -769,14 +848,7 @@
     }
 
     // endpoint is the journal URL of the open target, with its first params.
-    function endpoint(suffix, q) {
-      if (cur.wallet.total) {
-        var ids = cur.wallet.wallets.map(function (w) { return w.id; });
-        q.unshift("wallet_ids=" + encodeURIComponent(ids.join(",")));
-        return "/api/journal" + suffix + "?" + q.join("&");
-      }
-      return "/api/wallets/" + encodeURIComponent(String(cur.wallet.id)) + "/journal" + suffix + "?" + q.join("&");
-    }
+    function endpoint(suffix, q) { return journalURL(cur.wallet, suffix, q); }
 
     function url(cursor) {
       var q = ["limit=" + JOURNAL_PAGE];
@@ -789,14 +861,14 @@
       return endpoint("", q);
     }
 
-    function dailyUrl(withTz) {
-      var q = withTz ? ["tz=" + encodeURIComponent(tz)] : [];
+    function dailyQuery() {
+      var q = [];
       if (typeSel.value) { q.push("ref_type=" + encodeURIComponent(typeSel.value)); }
       var f = dayBound(from.value, false);
       var t = dayBound(to.value, true);
       if (f) { q.push("from=" + encodeURIComponent(f)); }
       if (t) { q.push("to=" + encodeURIComponent(t)); }
-      return endpoint("/daily", q);
+      return q;
     }
 
     function destroyChart() {
@@ -816,51 +888,8 @@
         canvas.setAttribute("aria-label", "Daily income and expenses: no data");
         return;
       }
-      var income = 0;
-      var expense = 0;
-      days.forEach(function (d) { income += d.income_cents; expense += d.expense_cents; });
       chartNote.textContent = "";
-      canvas.setAttribute("aria-label", "Daily income and expenses over " + n + (n === 1 ? " day" : " days") +
-        ": total income " + formatISK(income) + " ISK, total expenses " + formatISK(expense) + " ISK");
-      var c = themeColors();
-      var cs = getComputedStyle(document.body);
-      var good = cs.getPropertyValue("--good").trim() || "#8ed7bc";
-      var bad = cs.getPropertyValue("--bad").trim() || "#ff8a8a";
-      dailyChart = new Chart(canvas, {
-        type: "bar",
-        data: {
-          labels: days.map(function (d) { return d.day; }),
-          datasets: [
-            { label: "Income", data: days.map(function (d) { return d.income_cents / 100; }), backgroundColor: good, borderRadius: 3 },
-            { label: "Expenses", data: days.map(function (d) { return -d.expense_cents / 100; }), backgroundColor: bad, borderRadius: 3 }
-          ]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          animation: false,
-          interaction: { mode: "index", intersect: false },
-          scales: {
-            x: { stacked: true, ticks: { color: c.text, maxRotation: 0, autoSkip: true }, grid: { display: false } },
-            y: { stacked: true, beginAtZero: true, ticks: { color: c.text, callback: function (v) { return iskFmt.format(v); } }, grid: { color: c.grid } }
-          },
-          plugins: {
-            legend: { labels: { color: c.text, boxWidth: 12, boxHeight: 12 } },
-            // Expenses are drawn below zero; the tooltip shows them as a positive
-            // amount and adds the day's result (income minus expenses).
-            tooltip: {
-              callbacks: {
-                label: function (ctx) { return ctx.dataset.label + ": " + iskFmt.format(Math.abs(ctx.parsed.y)) + " ISK"; },
-                footer: function (items) {
-                  if (!items.length) { return ""; }
-                  var d = days[items[0].dataIndex];
-                  return "Net: " + signedISK(d.income_cents - d.expense_cents) + " ISK";
-                }
-              }
-            }
-          }
-        }
-      });
+      dailyChart = drawDailyChart(canvas, days);
     }
 
     // loadDaily refreshes the chart for the current filters; a newer request
@@ -871,12 +900,7 @@
       var t = dayBound(to.value, true);
       if (f && t && t < f) { return; }
       var seq = ++cur.dailySeq;
-      // A 400 while a tz was sent may mean the zone is unknown to the server;
-      // retry once without it (the server then groups in UTC). No loop.
-      getJSON(dailyUrl(true)).catch(function (err) {
-        if (err.unauthorized || seq !== cur.dailySeq || err.status !== 400 || !tz) { throw err; }
-        return getJSON(dailyUrl(false));
-      }).then(function (resp) {
+      fetchDaily(cur.wallet, dailyQuery(), tz).then(function (resp) {
         if (seq !== cur.dailySeq) { return; }
         showDaily(resp.days || []);
       }).catch(function (err) {
@@ -1167,6 +1191,15 @@
     var deltaLine = el("p", "", "delta");
     box.appendChild(balanceLine);
     box.appendChild(deltaLine);
+    // Daily income and expenses of the same target and range, above the balance chart.
+    var dailyBox = el("div", undefined, "expand-chart expand-daily");
+    var dailyCanvas = document.createElement("canvas");
+    dailyCanvas.setAttribute("role", "img");
+    var dailyNote = el("p", "", "muted movements-chart-note");
+    dailyNote.setAttribute("role", "status");
+    dailyBox.appendChild(dailyCanvas);
+    dailyBox.appendChild(dailyNote);
+    box.appendChild(dailyBox);
     var chartBox = el("div", undefined, "expand-chart");
     var canvas = document.createElement("canvas");
     canvas.setAttribute("role", "img");
@@ -1174,6 +1207,9 @@
     box.appendChild(chartBox);
 
     var chart = null;
+    var dailyChart = null;
+    var dailySeq = 0;
+    var tz = browserTZ();
     var trigger = null;
     var opened = false;
     var curKey = null;
@@ -1185,6 +1221,33 @@
       if (document.querySelector("dialog.movements-dialog:not(.expand-dialog)[open]")) { return; } // a modal dialog owns Escape
       ev.preventDefault();
       close();
+    }
+    function destroyDaily() {
+      dailySeq++; // an answer still in flight is stale now
+      if (dailyChart) { dailyChart.destroy(); dailyChart = null; }
+    }
+    // loadDaily draws the daily totals of the target over the selected range.
+    function loadDaily(target) {
+      destroyDaily();
+      var seq = dailySeq;
+      dailyNote.textContent = "";
+      dailyCanvas.hidden = false;
+      var q = [];
+      if (state.range > 0) { q.push("from=" + encodeURIComponent(new Date(Date.now() - state.range * 1000).toISOString())); }
+      fetchDaily(target, q, tz).then(function (resp) {
+        if (seq !== dailySeq) { return; }
+        var days = resp.days || [];
+        dailyCanvas.hidden = days.length === 0;
+        if (!days.length) {
+          dailyNote.textContent = "No daily totals for this range.";
+          return;
+        }
+        dailyChart = drawDailyChart(dailyCanvas, days);
+      }).catch(function (err) {
+        if (err.unauthorized || seq !== dailySeq) { return; }
+        dailyCanvas.hidden = true;
+        dailyNote.textContent = "Could not load the daily chart: " + err.message;
+      });
     }
     function render(opts) {
       var label = opts.wallet ? walletLabel(opts.wallet) : opts.label;
@@ -1203,6 +1266,7 @@
       if (chart) { chart.destroy(); chart = null; }
       // Theme colors are read now, after the dialog is shown.
       chart = new Chart(canvas, lineConfig({ label: label, points: opts.points, color: opts.color, dashed: opts.dashed }, true));
+      if (curTarget) { loadDaily(curTarget); } else { destroyDaily(); dailyCanvas.hidden = true; dailyNote.textContent = ""; }
     }
     // reset runs on every way of closing and is safe to call twice.
     function reset() {
@@ -1212,6 +1276,7 @@
       curTarget = null;
       document.removeEventListener("keydown", onDocKey);
       if (chart) { chart.destroy(); chart = null; }
+      destroyDaily();
       box.hidden = true;
       // The small charts were rebuilt while hidden: size them now they show.
       document.body.classList.remove("chart-expanded");
