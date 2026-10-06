@@ -586,12 +586,12 @@ func TestTabBarComesBeforeRangeCard(t *testing.T) {
 func TestAppHasMovementsDailyChart(t *testing.T) {
 	js := asset(t, "app.js")
 	for _, want := range []string{
-		`endpoint("/daily", q)`,
+		`journalURL(target, "/daily"`,
 		"Intl.DateTimeFormat().resolvedOptions().timeZone",
 		`"tz=" +`,
 		"loadDaily()",
-		"cur.dailySeq",    // stale answers are ignored
-		"dailyUrl(false)", // retry without tz when the zone is rejected
+		"cur.dailySeq",               // stale answers are ignored
+		"return getJSON(url(false))", // retry without tz when the zone is rejected
 		"err.status !== 400",
 		"destroyChart()",
 		`type: "bar"`,
@@ -657,6 +657,10 @@ func TestAppHasExpandedChart(t *testing.T) {
 		`document.body.classList.add("chart-expanded")`,        // the small charts give way while open
 		`document.body.classList.remove("chart-expanded")`,     // every way of closing goes through reset
 		"section.charts.forEach(function (c) { c.resize(); })", // charts rebuilt while hidden get sized on show
+		`"expand-chart expand-daily"`,                          // daily chart above the balance chart
+		"dailyChart = drawDailyChart(dailyCanvas, days)",       // same bars as the movements dialog
+		"fetchDaily(target, q, tz)",                            // same endpoint, target and tz fallback
+		"destroyDaily();",                                      // destroyed on every way of closing
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("app.js lacks %q", want)
@@ -684,8 +688,8 @@ func TestAppHasTotalMovements(t *testing.T) {
 		"total: true, image: null",                                 // drawPanels marks the Total panel
 		`"/api/journal" + suffix`,
 		`"wallet_ids=" + encodeURIComponent(`,
-		`"/api/wallets/" + encodeURIComponent(String(cur.wallet.id))`, // wallet mode URLs unchanged
-		`endpoint("/daily", q)`,
+		`"/api/wallets/" + encodeURIComponent(String(target.id))`, // wallet mode URLs unchanged
+		`journalURL(target, "/daily"`,
 		`[["Date"], ["Wallet"], ["Type"]`,
 		`"movements-wallet"`,
 		"walletLabel(x)",
