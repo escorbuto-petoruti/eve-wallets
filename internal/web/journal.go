@@ -16,7 +16,7 @@ const (
 	defaultJournalLimit = 50
 	maxJournalLimit     = 200
 	maxRefTypeLen       = 64
-	// defaultDailyDays is the chart window when neither from nor to is given.
+	// defaultDailyDays is the chart window when from is absent.
 	defaultDailyDays = 30
 	maxTZLen         = 64
 )
@@ -99,8 +99,8 @@ type dailyTotalJSON struct {
 
 // walletJournalDaily answers the income and expenses per local day of a wallet
 // the user can see, for the ref_type, from and to filters of the journal and a
-// tz IANA zone name (UTC when absent). Without from and to the window is the
-// last 30 days. Days run ascending and are zero-filled between the first and
+// tz IANA zone name (UTC when absent). Without from the window starts 30 days
+// before to (or before now when to is absent). Days run ascending and are zero-filled between the first and
 // the last one; expenses are positive magnitudes.
 func (s *server) walletJournalDaily(w http.ResponseWriter, r *http.Request, u store.User) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -142,8 +142,12 @@ func (s *server) walletJournalDaily(w http.ResponseWriter, r *http.Request, u st
 		}
 	}
 	f.WalletID = id
-	if f.From.IsZero() && f.To.IsZero() {
-		f.From = s.now().AddDate(0, 0, -defaultDailyDays)
+	if f.From.IsZero() {
+		end := f.To
+		if end.IsZero() {
+			end = s.now()
+		}
+		f.From = end.AddDate(0, 0, -defaultDailyDays)
 	}
 	rows, err := s.deps.Store.JournalAmounts(r.Context(), f)
 	if err != nil {

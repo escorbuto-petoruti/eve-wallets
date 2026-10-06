@@ -316,10 +316,37 @@ func TestJournalDailyDefaultsToLast30Days(t *testing.T) {
 	if code != http.StatusOK || len(got.Days) != 1 || got.Days[0].IncomeCents != 7 {
 		t.Fatalf("default window = %v (%d)", got.rows(), code)
 	}
-	// An explicit bound turns the default window off.
-	got, _, _ = dailyGet(f, itoa(f.charID), url.Values{"tz": {"UTC"}, "to": {now.Format(time.RFC3339)}})
-	if len(got.Days) != 3 || got.Days[0].IncomeCents != 5 {
-		t.Fatalf("explicit to must not apply the 30 day default: %v", got.rows())
+}
+
+// With only to given, the window is the 30 days before to, not all history.
+func TestJournalDailyBoundsWindowWhenOnlyToIsGiven(t *testing.T) {
+	f := newFixture(t, nil, true)
+	to := f.clock().Add(-60 * 24 * time.Hour)
+	addJournal(t, f,
+		store.JournalEntry{ID: 1, Date: to.Add(-31 * 24 * time.Hour), AmountCents: 5, RefType: "a"},
+		store.JournalEntry{ID: 2, Date: to.Add(-29 * 24 * time.Hour), AmountCents: 7, RefType: "a"},
+		store.JournalEntry{ID: 3, Date: to.Add(-1 * time.Hour), AmountCents: 11, RefType: "a"},
+	)
+	got, code, body := dailyGet(f, itoa(f.charID), url.Values{"tz": {"UTC"}, "to": {to.Format(time.RFC3339)}})
+	if code != http.StatusOK {
+		t.Fatalf("status = %d body %s", code, body)
+	}
+	var income int64
+	for _, d := range got.Days {
+		income += d.IncomeCents
+	}
+	if income != 18 {
+		t.Fatalf("income = %d (days %v), want 18: only rows within 30 days before to", income, got.rows())
+	}
+	// An explicit from is not capped.
+	from := to.Add(-90 * 24 * time.Hour)
+	got, _, _ = dailyGet(f, itoa(f.charID), url.Values{"tz": {"UTC"}, "from": {from.Format(time.RFC3339)}, "to": {to.Format(time.RFC3339)}})
+	income = 0
+	for _, d := range got.Days {
+		income += d.IncomeCents
+	}
+	if income != 23 {
+		t.Fatalf("explicit from income = %d, want 23", income)
 	}
 }
 
