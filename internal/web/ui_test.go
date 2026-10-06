@@ -377,7 +377,7 @@ func TestAppHasInlineRename(t *testing.T) {
 	}
 }
 
-// Every wallet panel (not the Total) opens a movements view backed by the
+// Every wallet panel opens a movements view backed by the
 // journal endpoint: filters, Previous/Next keyset paging, an announced status, focus
 // management and a close button. Server text only goes through textContent.
 func TestAppHasMovementsView(t *testing.T) {
@@ -392,7 +392,7 @@ func TestAppHasMovementsView(t *testing.T) {
 		`"Page "`,
 		"cur.stack",
 		"movements-pager",
-		`/journal?`,
+		`"/journal" + suffix + "?"`,
 		"encodeURIComponent(String(w.id))",
 		"ref_type",
 		"next_cursor",
@@ -586,7 +586,7 @@ func TestTabBarComesBeforeRangeCard(t *testing.T) {
 func TestAppHasMovementsDailyChart(t *testing.T) {
 	js := asset(t, "app.js")
 	for _, want := range []string{
-		`/journal/daily?`,
+		`endpoint("/daily", q)`,
 		"Intl.DateTimeFormat().resolvedOptions().timeZone",
 		`"tz=" +`,
 		"loadDaily()",
@@ -638,8 +638,8 @@ func TestAppHasExpandedChart(t *testing.T) {
 		"box.show()",                                           // non-modal: no backdrop, the time ranges stay usable
 		`ev.key !== "Escape"`,                                  // Escape closes it through a document handler
 		`insertAdjacentElement("afterend", section.expandBox)`, // docked under the time range section
-		"section.movements.open(curWallet, movesBtn)",          // wallets only: the Total has no movements
-		"movesBtn.hidden = !curWallet",
+		"section.movements.open(curTarget, movesBtn)",          // wallets and the Total
+		"movesBtn.hidden = !curTarget",
 		"section.expand.sync(opts, expandBtn)", // a range change refreshes the open dialog
 		"section.expand.finish()",
 		"destroyCharts(section, true)",
@@ -662,6 +662,40 @@ func TestAppHasExpandedChart(t *testing.T) {
 	css := asset(t, "style.css")
 	for _, want := range []string{".expand-chart", "flex: 1 1 auto", ".movements-dialog.expand-dialog[open]", "position: static",
 		"body.chart-expanded #sections .card > :not(.movements-dialog)", "body.chart-expanded #status-card", "min-height: 0", "height: 100dvh"} {
+		if !strings.Contains(css, want) {
+			t.Errorf("style.css lacks %q", want)
+		}
+	}
+}
+
+// The Total panel and its expanded chart open the same movements dialog in Total
+// mode: a Wallet column, wallet_ids of the section wallets, the same cap as the
+// balance chart, and the wallet mode untouched.
+func TestAppHasTotalMovements(t *testing.T) {
+	js := asset(t, "app.js")
+	for _, want := range []string{
+		"function totalTarget(section)",
+		"all.slice(0, MAX_IDS)",
+		"section.movements.open(totalTarget(section), totalMoves)", // the Total panel button
+		"opts.total ? totalTarget(section) : null",                 // the expanded Total shows it too
+		"total: true, image: null",                                 // drawPanels marks the Total panel
+		`"/api/journal" + suffix`,
+		`"wallet_ids=" + encodeURIComponent(`,
+		`"/api/wallets/" + encodeURIComponent(String(cur.wallet.id))`, // wallet mode URLs unchanged
+		`endpoint("/daily", q)`,
+		`[["Date"], ["Wallet"], ["Type"]`,
+		`"movements-wallet"`,
+		"walletLabel(x)",
+		`"Movements: " + (w.total ? "Total" : walletLabel(w))`,
+		"movements-cap-note",
+		`table.classList.toggle("movements-total", total)`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("app.js lacks %q", want)
+		}
+	}
+	css := asset(t, "style.css")
+	for _, want := range []string{".movements-table.movements-total", ".movements-wallet"} {
 		if !strings.Contains(css, want) {
 			t.Errorf("style.css lacks %q", want)
 		}

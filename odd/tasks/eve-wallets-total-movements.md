@@ -20,7 +20,8 @@ Movements exist per wallet only. The Total balance line sums several wallets, bu
 ## Tasks
 - [x] T1 backend: store multi-wallet journal and amounts queries (wallet id set, tie-break by wallet id), `GET /api/journal` and `GET /api/journal/daily`, wallet_id in entries, tests (visibility 404, cursor paging across wallets with colliding entry ids, filters, daily sums across wallets, zero-fill, tz).
   - Evidence: RED = new store and web tests failed to compile / returned 404 before the change; GREEN = `go test ./internal/store ./internal/web` pass after it. Commit: "feat(web): journal and daily totals across several wallets". Route: delegated writer.
-- [ ] T2 UI: Movements button on the Total panel and on the expanded Total chart; movements controller in Total mode (title, Wallet column, URLs, types, daily chart); structural UI test; README.
+- [x] T2 UI: Movements button on the Total panel and on the expanded Total chart; movements controller in Total mode (title, Wallet column, URLs, types, daily chart); structural UI test; README.
+  - Evidence: RED = TestAppHasMovementsView, TestAppHasMovementsDailyChart and TestAppHasExpandedChart failed on the literal strings after the JS change; GREEN = `go test ./internal/web` pass after updating them and adding TestAppHasTotalMovements; `node --check` ok. Not run in a browser. Commit: "feat(web): movements for the Total panel". Route: delegated writer.
 
 ## Routing / test policy
 - Test-first for Go behavior (RED before GREEN); JS covered by literal-string UI tests plus `node --check`.
